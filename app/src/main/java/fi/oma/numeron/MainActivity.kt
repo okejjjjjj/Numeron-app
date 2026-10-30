@@ -16,9 +16,11 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -60,7 +62,6 @@ class MainActivity : AppCompatActivity() {
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    // Tallentaa istuntoevästeet pysyvästi puhelimen muistiin
                     CookieManager.getInstance().flush()
                 }
             }
@@ -80,12 +81,12 @@ class MainActivity : AppCompatActivity() {
 
         val btnStamp = Button(this).apply {
             text = "Leimaus"
-            setOnClickListener { webView.loadUrl(NUMERON_BASE_URL) }
+            setOnClickListener { clickElementByText(listOf("leima", "työaika", "kellokortti")) }
         }
 
         val btnWishes = Button(this).apply {
             text = "Toiveet"
-            setOnClickListener { webView.loadUrl(NUMERON_BASE_URL) }
+            setOnClickListener { clickElementByText(listOf("toive", "suunnittelu", "vuorotoive")) }
         }
 
         val btnSync = Button(this).apply {
@@ -113,6 +114,41 @@ class MainActivity : AppCompatActivity() {
         })
 
         webView.loadUrl(NUMERON_BASE_URL)
+    }
+
+    private fun clickElementByText(keywords: List<String>) {
+        val jsArray = keywords.joinToString(",") { "'$it'" }
+        val jsCode = """
+            (function() {
+                var words = [$jsArray];
+                var docs = [document];
+                var iframes = document.querySelectorAll('iframe');
+                for (var i = 0; i < iframes.length; i++) {
+                    try { if (iframes[i].contentDocument) docs.push(iframes[i].contentDocument); } catch(e) {}
+                }
+                for (var d = 0; d < docs.length; d++) {
+                    var elements = docs[d].querySelectorAll('a, button, span, div, li, input[type="button"]');
+                    for (var w = 0; w < words.length; w++) {
+                        for (var i = 0; i < elements.length; i++) {
+                            var el = elements[i];
+                            var txt = (el.innerText || el.value || "").trim().toLowerCase();
+                            if (txt.length > 0 && txt.length < 30 && txt.indexOf(words[w]) !== -1) {
+                                el.click();
+                                return "Klikattiin: " + txt;
+                            }
+                        }
+                    }
+                }
+                return "NOT_FOUND";
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(jsCode) { result ->
+            if (result != null && result.contains("NOT_FOUND")) {
+                Toast.makeText(this, "Valikkoa ei löytynyt tältä sivulta, ladataan etusivu...", Toast.LENGTH_SHORT).show()
+                webView.loadUrl(NUMERON_BASE_URL)
+            }
+        }
     }
 
     private fun checkPermissionsAndSync() {
@@ -146,9 +182,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractShiftsFromPage() {
+        // Lukee tekstin pääsivulta JA kaikista iframe-kehyksistä
         val jsCode = """
             (function() {
                 var text = document.body ? document.body.innerText : "";
+                var iframes = document.querySelectorAll('iframe');
+                for (var i = 0; i < iframes.length; i++) {
+                    try {
+                        if (iframes[i].contentDocument && iframes[i].contentDocument.body) {
+                            text += "\n" + iframes[i].contentDocument.body.innerText;
+                        }
+                    } catch (e) {}
+                }
                 AndroidBridge.processPageText(text);
             })();
         """.trimIndent()
@@ -170,27 +215,45 @@ class MainActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
 
-                val count = parseAndInsertShifts(pageText, calendarId)
-                Toast.makeText(
-                    this@MainActivity,
-                    "Lisätty $count uutta työvuoroa kalenteriin",
-                    Toast.LENGTH_LONG
-                ).show()
+                val result = parseAndInsertShifts(pageText, calendarId)
+                val foundCount = result.first
+                val addedCount = result.second
+
+                if (foundCount == 0) {
+                    val preview = if (pageText.length > 500) pageText.substring(0, 500) + "..." else pageText
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Vuoroja ei tunnistettu")
+                        .setMessage("Sivulta ei löytynyt päivämääriä ja kellonaikoja. Tässä näyte sivun tekstistä:\n\n$preview")
+                        .setPositiveButton("OK", null)
+                        .show()
+                } else {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Löytyi $foundCount vuoroa, lisätty $addedCount uutta kalenteriin.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
 
-    private fun parseAndInsertShifts(text: String, calendarId: Long): Int {
-        // Sallii välilyönnit, sarkaimet ja yhden rivinvaihdon päivämäärän ja kellonajan välillä.
-        // Poimii saman rivin lopusta mahdollisen yksikön nimen, tai käyttää oletusta "Hoitokoti onni".
-        val regex = Regex("""(\d{1,2}\.\d{1,2}\.\d{4})[\s\t]*\r?\n?[\s\t]*(\d{1,2}[:.]\d{2})[\s\t]*-[\s\t]*(\d{1,2}[:.]\d{2})(?:[\t ]+([^\n\r\d]+))?""")
+    private fun parseAndInsertShifts(text: String, calendarId: Long): Pair<Int, Int> {
+        // Tunnistaa sekä "17.10.2026 07:00 - 15:15" että ilman vuosilukua "17.10. 07:00 - 15:15"
+        val regex = Regex("""(\d{1,2}\.\d{1,2}\.(?:\d{4})?)[\s\t]*\r?\n?[\s\t]*(\d{1,2}[:.]\d{2})[\s\t]*[-–][\s\t]*(\d{1,2}[:.]\d{2})(?:[\t ]+([^\n\r\d]+))?""")
         val matches = regex.findAll(text)
+        var foundCount = 0
         var addedCount = 0
 
+        val currentYear = LocalDate.now().year
         val formatter = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
 
         for (match in matches) {
-            val dateStr = match.groupValues[1].trim()
+            foundCount++
+            var dateStr = match.groupValues[1].trim()
+            if (dateStr.endsWith(".")) {
+                dateStr += currentYear.toString()
+            }
+
             val startStr = match.groupValues[2].trim().replace('.', ':')
             val endStr = match.groupValues[3].trim().replace('.', ':')
             val rawLocation = match.groupValues[4].trim()
@@ -217,7 +280,7 @@ class MainActivity : AppCompatActivity() {
                 e.printStackTrace()
             }
         }
-        return addedCount
+        return Pair(foundCount, addedCount)
     }
 
     private fun getPrimaryCalendarId(): Long? {
