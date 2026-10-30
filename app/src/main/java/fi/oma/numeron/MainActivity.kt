@@ -26,7 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
 
     // VAIHDA TÄHÄN TYÖPAIKKASI NUMERON-OSOITE:
-    private val NUMERON_BASE_URL = "https://numeron-osoite-tahan.fi"
+    private val NUMERON_BASE_URL = "https://siunsote.numeronwfm.com/"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
