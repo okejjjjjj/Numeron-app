@@ -9,11 +9,13 @@ import android.provider.CalendarContract
 import android.view.Gravity
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -26,7 +28,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
 
     // VAIHDA TÄHÄN TYÖPAIKKASI NUMERON-OSOITE:
-    private val NUMERON_BASE_URL = "https://siunsote.numeronwfm.com/"
+    private val NUMERON_BASE_URL = "https://siunsote.numeronwfm.com"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,14 +48,29 @@ class MainActivity : AppCompatActivity() {
                 0,
                 1f
             )
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            webViewClient = WebViewClient()
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+            }
+            webChromeClient = WebChromeClient()
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    // Tallentaa istuntoevästeet pysyvästi puhelimen muistiin
+                    CookieManager.getInstance().flush()
+                }
+            }
             addJavascriptInterface(CalendarBridge(), "AndroidBridge")
         }
 
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+        }
 
         val buttonBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -68,10 +85,7 @@ class MainActivity : AppCompatActivity() {
 
         val btnWishes = Button(this).apply {
             text = "Toiveet"
-            setOnClickListener {
-                // Voit vaihtaa tähän suoran URL-polun tai JS-klikkauksen
-                webView.loadUrl(NUMERON_BASE_URL)
-            }
+            setOnClickListener { webView.loadUrl(NUMERON_BASE_URL) }
         }
 
         val btnSync = Button(this).apply {
@@ -86,6 +100,17 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(webView)
         rootLayout.addView(buttonBar)
         setContentView(rootLayout)
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
 
         webView.loadUrl(NUMERON_BASE_URL)
     }
@@ -105,12 +130,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                extractShiftsFromPage()
+            } else {
+                Toast.makeText(this, "Kalenterioikeudet vaaditaan vuorojen tallentamiseen", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun extractShiftsFromPage() {
-        // Lukee koko näkyvän sivun tekstin ja lähettää sen Kotlinin jäsenneltäväksi.
-        // Poimii automaattisesti muodot kuten "17.10.2026 07:00 - 15:15" tai "17.10.2026 07.00-15.15"
         val jsCode = """
             (function() {
-                var text = document.body.innerText;
+                var text = document.body ? document.body.innerText : "";
                 AndroidBridge.processPageText(text);
             })();
         """.trimIndent()
@@ -122,7 +160,17 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun processPageText(pageText: String) {
             runOnUiThread {
-                val count = parseAndInsertShifts(pageText)
+                val calendarId = getPrimaryCalendarId()
+                if (calendarId == null) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Virhe: Puhelimesta ei löytynyt Google Kalenteria.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@runOnUiThread
+                }
+
+                val count = parseAndInsertShifts(pageText, calendarId)
                 Toast.makeText(
                     this@MainActivity,
                     "Lisätty $count uutta työvuoroa kalenteriin",
@@ -132,30 +180,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun parseAndInsertShifts(text: String): Int {
-        // Tunnistaa päivämäärän (esim. 17.10.2026) ja kellonajan (esim. 07.00-15.15 tai 07:00 - 15:15)
-        val regex = Regex("""(\d{1,2}\.\d{1,2}\.\d{4})\s+(\d{1,2}[:.]\d{2})\s*-\s*(\d{1,2}[:.]\d{2})(?:\s+([^\n\r]+))?""")
+    private fun parseAndInsertShifts(text: String, calendarId: Long): Int {
+        // Sallii välilyönnit, sarkaimet ja yhden rivinvaihdon päivämäärän ja kellonajan välillä.
+        // Poimii saman rivin lopusta mahdollisen yksikön nimen, tai käyttää oletusta "Hoitokoti onni".
+        val regex = Regex("""(\d{1,2}\.\d{1,2}\.\d{4})[\s\t]*\r?\n?[\s\t]*(\d{1,2}[:.]\d{2})[\s\t]*-[\s\t]*(\d{1,2}[:.]\d{2})(?:[\t ]+([^\n\r\d]+))?""")
         val matches = regex.findAll(text)
         var addedCount = 0
 
-        val calendarId = getPrimaryCalendarId() ?: return 0
         val formatter = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
 
         for (match in matches) {
-            val dateStr = match.groupValues[1]
-            val startStr = match.groupValues[2].replace('.', ':')
-            val endStr = match.groupValues[3].replace('.', ':')
+            val dateStr = match.groupValues[1].trim()
+            val startStr = match.groupValues[2].trim().replace('.', ':')
+            val endStr = match.groupValues[3].trim().replace('.', ':')
             val rawLocation = match.groupValues[4].trim()
 
-            // Oletusyksikkö, jos riviltä ei suoraan löydy nimeä
-            val unitName = if (rawLocation.isNotEmpty()) rawLocation else "Hoitokoti onni"
+            val unitName = if (rawLocation.length > 2) rawLocation else "Hoitokoti onni"
             val title = "työvuoro, $unitName"
 
             try {
-                val startDateTime = LocalDateTime.parse("$dateStr $startStr", formatter)
-                var endDateTime = LocalDateTime.parse("$dateStr $endStr", formatter)
+                val startDateTime = LocalDateTime.parse("$dateStr$startStr", formatter)
+                var endDateTime = LocalDateTime.parse("$dateStr$endStr", formatter)
 
-                // Jos yövuoro päättyy seuraavan vuorokauden puolella
                 if (endDateTime.isBefore(startDateTime)) {
                     endDateTime = endDateTime.plusDays(1)
                 }
@@ -186,11 +232,11 @@ class MainActivity : AppCompatActivity() {
         )?.use { cursor ->
             if (cursor.moveToFirst()) return cursor.getLong(0)
         }
-        // Varavaihtoehto: haetaan ensimmäinen muokattava kalenteri
+
         contentResolver.query(
             CalendarContract.Calendars.CONTENT_URI,
             projection,
-            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}",
+            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >=${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}",
             null,
             null
         )?.use { cursor ->
@@ -217,22 +263,5 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun insertCalendarEvent(calendarId: Long, title: String, startMillis: Long, endMillis: Long) {
-        val values = ContentValues().apply {
-            put(CalendarContract.Events.DTSTART, startMillis)
-            put(CalendarContract.Events.DTEND, endMillis)
-            put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.EVENT_TIMEZONE, ZoneId.systemDefault().id)
-        }
-        contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
-    }
-
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
-}
-
+        val
+        
