@@ -199,8 +199,8 @@ class MainActivity : AppCompatActivity() {
             val title = "työvuoro, $unitName"
 
             try {
-                val startDateTime = LocalDateTime.parse("$dateStr$startStr", formatter)
-                var endDateTime = LocalDateTime.parse("$dateStr$endStr", formatter)
+                val startDateTime = LocalDateTime.parse("$dateStr $startStr", formatter)
+                var endDateTime = LocalDateTime.parse("$dateStr $endStr", formatter)
 
                 if (endDateTime.isBefore(startDateTime)) {
                     endDateTime = endDateTime.plusDays(1)
@@ -236,7 +236,7 @@ class MainActivity : AppCompatActivity() {
         contentResolver.query(
             CalendarContract.Calendars.CONTENT_URI,
             projection,
-            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >=${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}",
+            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}",
             null,
             null
         )?.use { cursor ->
@@ -263,5 +263,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun insertCalendarEvent(calendarId: Long, title: String, startMillis: Long, endMillis: Long) {
-        val
-        
+        val values = ContentValues().apply {
+            put(CalendarContract.Events.DTSTART, startMillis)
+            put(CalendarContract.Events.DTEND, endMillis)
+            put(CalendarContract.Events.TITLE, title)
+            put(CalendarContract.Events.CALENDAR_ID, calendarId)
+            put(CalendarContract.Events.EVENT_TIMEZONE, ZoneId.systemDefault().id)
+        }
+        contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
+    }
+}
