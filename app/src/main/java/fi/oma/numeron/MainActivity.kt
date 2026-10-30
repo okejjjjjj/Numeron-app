@@ -190,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         contentResolver.query(
             CalendarContract.Calendars.CONTENT_URI,
             projection,
-            "${CalendarContract.Calendars.CALENDAR_ACCESS_level} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}",
+            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}",
             null,
             null
         )?.use { cursor ->
