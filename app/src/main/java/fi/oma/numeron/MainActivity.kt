@@ -2,7 +2,10 @@ package fi.oma.numeron
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -315,6 +318,32 @@ class MainActivity : AppCompatActivity() {
         return Pair("", "$type hoitaja")
     }
 
+    private fun scheduleShiftAlarm(startMillis: Long, title: String) {
+        try {
+            val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+            val startAlarmTime = startMillis - (30 * 60 * 1000)
+            if (startAlarmTime > System.currentTimeMillis()) {
+                val intent = Intent(this, ShiftAlarmReceiver::class.java).apply {
+                    putExtra("SHIFT_TITLE", title)
+                    putExtra("IS_ENDING", false)
+                }
+                val pendingIntent = PendingIntent.getBroadcast(
+                    this,
+                    startAlarmTime.toInt(),
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                alarmManager.setExactAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    startAlarmTime,
+                    pendingIntent
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun saveWorkShift(calId: Long, dateStr: String, startStr: String, endStr: String, raw: String, fmt: DateTimeFormatter): Boolean {
         return try {
             val sDt = LocalDateTime.parse("$dateStr $startStr", fmt)
@@ -326,6 +355,7 @@ class MainActivity : AppCompatActivity() {
             val exId = findEventId(calId, sMs, eMs)
             if (exId == null) {
                 insertEvent(calId, "Työvuoro", loc, desc, sMs, eMs, false)
+                scheduleShiftAlarm(sMs, desc)
                 true
             } else if (loc.isNotEmpty()) {
                 updateEvent(exId, loc, desc)
@@ -333,35 +363,6 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { false }
     }
 
-private fun scheduleShiftAlarm(context: Context, startMillis: Long, endMillis: Long, title: String) {
-    try {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-        
-        // 30 minuuttia ennen vuoron alkua
-        val startAlarmTime = startMillis - (30 * 60 * 1000)
-        if (startAlarmTime > System.currentTimeMillis()) {
-            val intent = Intent(context, ShiftAlarmReceiver::class.java).apply {
-                putExtra("SHIFT_TITLE", title)
-                putExtra("IS_ENDING", false)
-            }
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                startAlarmTime.toInt(),
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            alarmManager.setExactAndAllowWhileIdle(
-                android.app.AlarmManager.RTC_WAKEUP,
-                startAlarmTime,
-                pendingIntent
-            )
-        }
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-}
-
-    
     private fun saveVacationDay(calId: Long, d: Int, m: Int, y: Int): Boolean {
         return try {
             val date = LocalDate.of(y, m, d)
