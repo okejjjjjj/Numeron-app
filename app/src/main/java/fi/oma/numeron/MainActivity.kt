@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSync: Button
     private var pendingAutoStamp = false
     private var pendingStampIsEnding = false
+    private var waitingForListViewSync = false
 
     private val URL_STAMPING = "https://siunsote.numeronwfm.com/WorktimeStamping"
     private val URL_WISHES = "https://siunsote.numeronwfm.com/PersonRequests/List"
@@ -68,6 +69,9 @@ class MainActivity : AppCompatActivity() {
                     if (pendingAutoStamp && currentUrl.contains("/WorktimeStamping", ignoreCase = true)) {
                         pendingAutoStamp = false
                         performAutoStamp(pendingStampIsEnding)
+                    } else if (waitingForListViewSync && currentUrl.contains("/Calendar/", ignoreCase = true)) {
+                        waitingForListViewSync = false
+                        webView.postDelayed({ extractShiftsFromPage(forceList = false) }, 700)
                     }
                 }
             }
@@ -200,7 +204,7 @@ class MainActivity : AppCompatActivity() {
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
         } else {
-            extractShiftsFromPage()
+            extractShiftsFromPage(forceList = true)
         }
     }
 
@@ -209,19 +213,54 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == 100) {
             val r = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
             val w = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
-            if (r && w) extractShiftsFromPage()
+            if (r && w) extractShiftsFromPage(forceList = true)
         }
     }
 
-    private fun extractShiftsFromPage() {
+    private fun extractShiftsFromPage(forceList: Boolean = true) {
         val js = """
             (function() {
                 var bodyText = document.body ? document.body.innerText : "";
+                var isGrid = /Vk\.?\s+Ma\s+Ti\s+Ke/i.test(bodyText);
+
+                if ($forceList && isGrid) {
+                    // 1. Jos Näkymä-pudotusvalikko on <select>-elementti:
+                    var selects = document.querySelectorAll('select');
+                    for (var s = 0; s < selects.length; s++) {
+                        for (var o = 0; o < selects[s].options.length; o++) {
+                            var optTxt = (selects[s].options[o].text || "").toLowerCase();
+                            if (optTxt.indexOf('luettelo') !== -1 || optTxt.indexOf('lista') !== -1 || optTxt.indexOf('list') !== -1) {
+                                selects[s].selectedIndex = o;
+                                selects[s].dispatchEvent(new Event('change', { bubbles: true }));
+                                return "SWITCHED_TO_LIST";
+                            }
+                        }
+                    }
+                    // 2. Jos Näkymä-valikko on painike + lista (Bootstrap dropdown):
+                    var viewBtns = document.querySelectorAll('button, a, span, div');
+                    for (var b = 0; b < viewBtns.length; b++) {
+                        var bt = (viewBtns[b].innerText || "").trim().toLowerCase();
+                        if (bt === 'näkymä' || bt.indexOf('näkymä') === 0) {
+                            viewBtns[b].click();
+                            break;
+                        }
+                    }
+                    var links = document.querySelectorAll('a, li, button, span, div');
+                    for (var i = 0; i < links.length; i++) {
+                        var t = (links[i].innerText || "").trim().toLowerCase();
+                        var href = (links[i].getAttribute && links[i].getAttribute('href')) || "";
+                        if (t === 'luettelo' || t === 'lista' || href.toLowerCase().indexOf('/calendar/list') !== -1 || href.toLowerCase().indexOf('view=list') !== -1) {
+                            links[i].click();
+                            return "SWITCHED_TO_LIST";
+                        }
+                    }
+                }
+
                 var cells = [];
                 var tds = document.querySelectorAll('td');
                 if (tds.length > 15) {
-                    for (var i = 0; i < tds.length; i++) {
-                        var td = tds[i];
+                    for (var j = 0; j < tds.length; j++) {
+                        var td = tds[j];
                         var cls = (td.className || "").toLowerCase();
                         var isWeekCol = /week|vk|wk/.test(cls) || (td.parentElement && td.parentElement.children.length === 8 && td.cellIndex === 0);
                         if (isWeekCol) continue;
@@ -229,16 +268,30 @@ class MainActivity : AppCompatActivity() {
                         var extra = [];
                         var ch = td.querySelectorAll('[title], [data-original-title]');
                         for (var c = 0; c < ch.length; c++) {
-                            var t = ch[c].getAttribute('title') || ch[c].getAttribute('data-original-title');
-                            if (t) extra.push(t);
+                            var ti = ch[c].getAttribute('title') || ch[c].getAttribute('data-original-title');
+                            if (ti) extra.push(ti);
                         }
                         cells.push({ text: (td.innerText || "").trim(), isOther: isOther, extra: extra.join(" | ") });
                     }
                 }
                 AndroidBridge.processCalendarData(JSON.stringify(cells), bodyText, window.location.href);
+                return "EXTRACTED";
             })();
         """.trimIndent()
-        webView.evaluateJavascript(js, null)
+
+        webView.evaluateJavascript(js) { result ->
+            if (result != null && result.contains("SWITCHED_TO_LIST")) {
+                waitingForListViewSync = true
+                Toast.makeText(this, "Vaihdetaan luettelonäkymään työpisteiden hakua varten...", Toast.LENGTH_SHORT).show()
+                // Jos luettelo päivittyy samalla sivulla ilman täyttä URL-latausta (AJAX), luetaan se 1.2 sekunnin kuluttua:
+                webView.postDelayed({
+                    if (waitingForListViewSync) {
+                        waitingForListViewSync = false
+                        extractShiftsFromPage(forceList = false)
+                    }
+                }, 1200)
+            }
+        }
     }
 
     inner class CalendarBridge {
@@ -279,7 +332,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractDirectVacationRanges(text: String, defaultYear: Int, vacationDays: MutableList<LocalDate>): Int {
         var foundRanges = 0
-        // Tunnistaa suorat lomajaksot tekstistä, esim. "16.11. - 22.11. Vuosiloma" tai "16. - 22.11.2026 Loma"
         val rangeRegex = Regex("""(\d{1,2})\.(?:(\d{1,2})\.)?(?:\d{4})?\s*[-–]\s*(\d{1,2})\.(\d{1,2})\.?(?:(\d{4}))?[^\n\r]*(?:loma|\bvl\b)""", RegexOption.IGNORE_CASE)
         for (m in rangeRegex.findAll(text)) {
             val d1 = m.groupValues[1].toIntOrNull() ?: continue
@@ -390,7 +442,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processListBlock(calId: Long, d: Int, m: Int, y: Int, block: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
-        // Jos lohkossa mainitaan loma, käsitellään se aina lomana (myös jos siellä on laskennallinen klo 08:00 - 15:39)
         if (block.lowercase().let { it.contains("loma") || Regex("""\bvl\b""").containsMatchIn(it) }) {
             try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
             return Pair(1, 0)
@@ -447,8 +498,8 @@ class MainActivity : AppCompatActivity() {
             return Pair(lines[0], lines[0])
         }
         val h = startStr.substringBefore(":").toIntOrNull() ?: 7
-        val type = if (h < 11) "aamu" else if (h < 18) "ilta" else "yö"
-        return Pair("", "$type hoitaja")
+        val type = if (h < 11) "Aamuvuoro" else if (h < 18) "Iltavuoro" else "Yövuoro"
+        return Pair("", type)
     }
 
     private fun scheduleShiftAlarms(startMillis: Long, endMillis: Long, title: String) {
@@ -496,7 +547,6 @@ class MainActivity : AppCompatActivity() {
             val sMs = sDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
             val eMs = eDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
-            // EHDOTON ESTO: Jos työvuoro on jo mennyt, ei lisätä toteutuneita leimausaikoja eikä muokata vanhoja
             if (eMs < System.currentTimeMillis()) {
                 return false
             }
@@ -504,7 +554,6 @@ class MainActivity : AppCompatActivity() {
             val (loc, desc) = extractLocAndDesc(startStr, raw)
             scheduleShiftAlarms(sMs, eMs, desc.ifEmpty { "Työvuoro" })
 
-            // Etsitään saman päivän työvuoroa (vaikka kellonaika olisi muuttunut muutamalla minuutilla)
             val dayStartMs = sDt.toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
             val dayEndMs = sDt.toLocalDate().plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
             val exId = findShiftOnSameDay(calId, sMs, eMs, dayStartMs, dayEndMs)
@@ -529,7 +578,6 @@ class MainActivity : AppCompatActivity() {
         for (i in 1 until days.size) {
             val current = days[i]
             val gapDays = ChronoUnit.DAYS.between(endDate, current)
-            // Yhdistetään peräkkäiset päivät TAI jos välissä on pelkkä viikonloppu (la-su), johon Numeron ei ole merkinnyt VL-koodia
             val isWeekendBridge = gapDays in 2..3 &&
                     (endDate.dayOfWeek == DayOfWeek.FRIDAY || endDate.dayOfWeek == DayOfWeek.SATURDAY) &&
                     current.dayOfWeek == DayOfWeek.MONDAY
@@ -551,7 +599,6 @@ class MainActivity : AppCompatActivity() {
             val sMs = startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
             val eMs = endDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
-            // Jos kalenterissa on jo "Loma" samalla aloituspäivällä (esim. vanha 1 pv merkintä), pidennetään se kattamaan koko loma
             val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DTSTART} <= ? AND ${CalendarContract.Events.DTEND} >= ? AND ${CalendarContract.Events.DELETED} = 0"
             contentResolver.query(
                 CalendarContract.Events.CONTENT_URI,
@@ -597,17 +644,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun findShiftOnSameDay(calId: Long, sMs: Long, eMs: Long, dayStartMs: Long, dayEndMs: Long): Long? {
-        // 1. Täsmällinen kellonaika
         val exactSel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.DTEND} = ? AND ${CalendarContract.Events.DELETED} = 0"
         contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), exactSel, arrayOf(calId.toString(), sMs.toString(), eMs.toString()), null)?.use {
             if (it.moveToFirst()) return it.getLong(0)
         }
-        // 2. Saman päivän Työvuoro, jonka aloitusaika on lähellä (estää tuplat jos minuutit muuttuvat)
         val daySel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DTSTART} >= ? AND ${CalendarContract.Events.DTSTART} < ? AND ${CalendarContract.Events.DELETED} = 0"
         contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID, CalendarContract.Events.DTSTART), daySel, arrayOf(calId.toString(), "Työvuoro", dayStartMs.toString(), dayEndMs.toString()), null)?.use {
             while (it.moveToNext()) {
                 val existingStart = it.getLong(1)
-                if ( kotlin.math.abs(existingStart - sMs) <= 2 * 60 * 60 * 1000L ) {
+                if (kotlin.math.abs(existingStart - sMs) <= 2 * 60 * 60 * 1000L) {
                     return it.getLong(0)
                 }
             }
