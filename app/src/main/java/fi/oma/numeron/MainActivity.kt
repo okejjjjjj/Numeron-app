@@ -2,16 +2,20 @@ package fi.oma.numeron
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.CalendarContract
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.webkit.*
@@ -29,10 +33,16 @@ import java.time.temporal.ChronoUnit
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private lateinit var btnStamp: Button
+    private lateinit var btnWishes: Button
+    private lateinit var btnCalendar: Button
     private lateinit var btnSync: Button
+    private lateinit var btnClose: Button
+
     private var pendingAutoStamp = false
     private var pendingStampIsEnding = false
     private var waitingForListViewSync = false
+    private var lastAutoLoginAttempt = 0L
 
     private val URL_STAMPING = "https://siunsote.numeronwfm.com/WorktimeStamping"
     private val URL_WISHES = "https://siunsote.numeronwfm.com/PersonRequests/List"
@@ -51,6 +61,7 @@ class MainActivity : AppCompatActivity() {
 
         webView = WebView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+            setBackgroundColor(Color.parseColor("#121212"))
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -65,7 +76,9 @@ class MainActivity : AppCompatActivity() {
                     super.onPageFinished(view, url)
                     CookieManager.getInstance().flush()
                     val currentUrl = url ?: ""
-                    updateButtonVisibility(currentUrl)
+                    updateNavigationState(currentUrl)
+                    tryAutoLoginIfNeeded()
+
                     if (pendingAutoStamp && currentUrl.contains("/WorktimeStamping", ignoreCase = true)) {
                         pendingAutoStamp = false
                         performAutoStamp(pendingStampIsEnding)
@@ -86,37 +99,37 @@ class MainActivity : AppCompatActivity() {
         val buttonBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(8, 12, 8, 12)
-            setBackgroundColor(Color.parseColor("#1F1F1F"))
+            setPadding(10, 14, 10, 14)
+            setBackgroundColor(Color.parseColor("#1A1A1A"))
         }
 
-        fun createStyledButton(label: String, bgColor: String = "#333333", action: () -> Unit): Button {
+        fun createNavButton(label: String, action: () -> Unit): Button {
             return Button(this).apply {
                 text = label
-                textSize = 11f
+                textSize = 11.5f
                 setTextColor(Color.WHITE)
                 isAllCaps = false
-                setPadding(2, 4, 2, 4)
+                setPadding(4, 6, 4, 6)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = 4
-                    marginEnd = 4
-                }
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 16f
-                    setColor(Color.parseColor(bgColor))
+                    marginStart = 5
+                    marginEnd = 5
                 }
                 setOnClickListener { action() }
             }
         }
 
-        val btnStamp = createStyledButton("Leimaus") { webView.loadUrl(URL_STAMPING) }
-        val btnWishes = createStyledButton("Toiveet") { webView.loadUrl(URL_WISHES) }
-        val btnCalendar = createStyledButton("Vuorot") { webView.loadUrl(URL_CALENDAR) }
-        btnSync = createStyledButton("GCal", "#2E7D32") { checkPermissionsAndSync() }.apply {
+        btnStamp = createNavButton("Leimaus") { webView.loadUrl(URL_STAMPING) }.apply {
+            setOnLongClickListener {
+                showCredentialsDialog()
+                true
+            }
+        }
+        btnWishes = createNavButton("Toiveet") { webView.loadUrl(URL_WISHES) }
+        btnCalendar = createNavButton("Vuorot") { webView.loadUrl(URL_CALENDAR) }
+        btnSync = createNavButton("Vie kalenteriin") { checkPermissionsAndSync() }.apply {
             visibility = View.GONE
         }
-        val btnClose = createStyledButton("Sulje", "#5C2B29") { finishAndRemoveTask() }
+        btnClose = createNavButton("Sulje") { finishAndRemoveTask() }
 
         buttonBar.addView(btnStamp)
         buttonBar.addView(btnWishes)
@@ -128,6 +141,8 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(buttonBar)
         setContentView(rootLayout)
 
+        updateNavigationState(URL_STAMPING)
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) webView.goBack()
@@ -135,7 +150,136 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // Kysytään ensimmäisellä käynnistyksellä haluaako tallentaa tunnukset
+        val prefs = getSharedPreferences("numeron_prefs", MODE_PRIVATE)
+        if (!prefs.contains("asked_creds")) {
+            prefs.edit().putBoolean("asked_creds", true).apply()
+            showCredentialsDialog()
+        }
+
         webView.loadUrl(URL_STAMPING)
+    }
+
+    private fun styleButton(btn: Button, bgColor: String, isSelected: Boolean) {
+        btn.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 20f
+            setColor(Color.parseColor(bgColor))
+            if (isSelected) {
+                setStroke(4, Color.WHITE)
+            }
+        }
+        btn.setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+        btn.alpha = if (isSelected) 1.0f else 0.85f
+    }
+
+    private fun updateNavigationState(url: String) {
+        val u = if (url.isNotEmpty()) url else (webView.url ?: "")
+        val isCal = u.contains("/Calendar/", ignoreCase = true)
+        val isWishes = u.contains("/PersonRequests/", ignoreCase = true)
+        val isStamp = u.contains("/WorktimeStamping", ignoreCase = true) || (!isCal && !isWishes)
+
+        // Kun ollaan kalenterissa, Vuorot-nappi poistuu ja tilalle tulee Vie kalenteriin
+        btnCalendar.visibility = if (isCal) View.GONE else View.VISIBLE
+        btnSync.visibility = if (isCal) View.VISIBLE else View.GONE
+
+        styleButton(btnStamp, if (isStamp) "#0288D1" else "#2C2C2C", isStamp)
+        styleButton(btnWishes, if (isWishes) "#0288D1" else "#2C2C2C", isWishes)
+        styleButton(btnCalendar, "#2C2C2C", false)
+        styleButton(btnSync, "#2E7D32", true)
+        styleButton(btnClose, "#6A2320", false)
+    }
+
+    private fun showCredentialsDialog() {
+        val prefs = getSharedPreferences("numeron_prefs", MODE_PRIVATE)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(50, 30, 50, 10)
+        }
+        val userField = EditText(this).apply {
+            hint = "Käyttäjätunnus"
+            setText(prefs.getString("username", ""))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        }
+        val passField = EditText(this).apply {
+            hint = "Salasana"
+            setText(prefs.getString("password", ""))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        layout.addView(userField)
+        layout.addView(passField)
+
+        AlertDialog.Builder(this)
+            .setTitle("Automaattinen kirjautuminen")
+            .setMessage("Tallenna tunnukset, jos haluat sovelluksen kirjautuvan automaattisesti uloskirjautumisen jälkeen (voit avata tämän myöhemmin pitämällä Leimaus-nappia pohjassa).")
+            .setView(layout)
+            .setPositiveButton("Tallenna") { _, _ ->
+                prefs.edit()
+                    .putString("username", userField.text.toString().trim())
+                    .putString("password", passField.text.toString())
+                    .apply()
+                Toast.makeText(this, "Tunnukset tallennettu", Toast.LENGTH_SHORT).show()
+                tryAutoLoginIfNeeded()
+            }
+            .setNeutralButton("Tyhjennä") { _, _ ->
+                prefs.edit().remove("username").remove("password").apply()
+                Toast.makeText(this, "Tunnukset poistettu", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Peruuta", null)
+            .show()
+    }
+
+    private fun tryAutoLoginIfNeeded() {
+        val now = System.currentTimeMillis()
+        if (now - lastAutoLoginAttempt < 4000L) return
+
+        val prefs = getSharedPreferences("numeron_prefs", MODE_PRIVATE)
+        val u = prefs.getString("username", "") ?: ""
+        val p = prefs.getString("password", "") ?: ""
+        if (u.isEmpty() || p.isEmpty()) return
+
+        val safeU = u.replace("\\", "\\\\").replace("'", "\\'")
+        val safeP = p.replace("\\", "\\\\").replace("'", "\\'")
+
+        val js = """
+            (function() {
+                var passInputs = document.querySelectorAll('input[type="password"]');
+                if (passInputs.length === 0) return "NO_LOGIN_FORM";
+                var passEl = null;
+                for (var i = 0; i < passInputs.length; i++) {
+                    if (passInputs[i].offsetParent !== null) { passEl = passInputs[i]; break; }
+                }
+                if (!passEl) return "NO_VISIBLE_PASS";
+
+                var userEl = document.querySelector('input[type="email"], input[name*="user" i], input[name*="login" i], input[id*="user" i], input[type="text"]');
+                if (userEl && !userEl.value) {
+                    userEl.value = '$safeU';
+                    userEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    userEl.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                passEl.value = '$safeP';
+                passEl.dispatchEvent(new Event('input', { bubbles: true }));
+                passEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+                var submitBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="login" i], button[name*="login" i]');
+                if (submitBtn) {
+                    submitBtn.click();
+                    return "SUBMITTED";
+                }
+                if (passEl.form) {
+                    passEl.form.submit();
+                    return "SUBMITTED";
+                }
+                return "FILLED";
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(js) { res ->
+            if (res != null && res.contains("SUBMITTED")) {
+                lastAutoLoginAttempt = System.currentTimeMillis()
+                Toast.makeText(this, "Kirjaudutaan sisään automaattisesti...", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -152,6 +296,8 @@ class MainActivity : AppCompatActivity() {
             pendingAutoStamp = true
             pendingStampIsEnding = intent.getBooleanExtra("IS_ENDING", false)
             intent.removeExtra("AUTO_STAMP")
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(if (pendingStampIsEnding) 2002 else 1001)
         }
     }
 
@@ -189,12 +335,6 @@ class MainActivity : AppCompatActivity() {
         }, 800)
     }
 
-    private fun updateButtonVisibility(url: String) {
-        val isCal = url.contains("/Calendar/", ignoreCase = true) ||
-                (webView.url?.contains("/Calendar/", ignoreCase = true) == true)
-        btnSync.visibility = if (isCal) View.VISIBLE else View.GONE
-    }
-
     private fun checkPermissionsAndSync() {
         val needed = mutableListOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -224,7 +364,6 @@ class MainActivity : AppCompatActivity() {
                 var isGrid = /Vk\.?\s+Ma\s+Ti\s+Ke/i.test(bodyText);
 
                 if ($forceList && isGrid) {
-                    // 1. Jos Näkymä-pudotusvalikko on <select>-elementti:
                     var selects = document.querySelectorAll('select');
                     for (var s = 0; s < selects.length; s++) {
                         for (var o = 0; o < selects[s].options.length; o++) {
@@ -236,7 +375,6 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                     }
-                    // 2. Jos Näkymä-valikko on painike + lista (Bootstrap dropdown):
                     var viewBtns = document.querySelectorAll('button, a, span, div');
                     for (var b = 0; b < viewBtns.length; b++) {
                         var bt = (viewBtns[b].innerText || "").trim().toLowerCase();
@@ -282,8 +420,7 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js) { result ->
             if (result != null && result.contains("SWITCHED_TO_LIST")) {
                 waitingForListViewSync = true
-                Toast.makeText(this, "Vaihdetaan luettelonäkymään työpisteiden hakua varten...", Toast.LENGTH_SHORT).show()
-                // Jos luettelo päivittyy samalla sivulla ilman täyttä URL-latausta (AJAX), luetaan se 1.2 sekunnin kuluttua:
+                Toast.makeText(this, "Vaihdetaan luettelonäkymään...", Toast.LENGTH_SHORT).show()
                 webView.postDelayed({
                     if (waitingForListViewSync) {
                         waitingForListViewSync = false
@@ -311,7 +448,7 @@ class MainActivity : AppCompatActivity() {
                         .setMessage("Näkymästä ei tunnistettu vuoroja. Tekstinäyte:\n\n$prev")
                         .setPositiveButton("OK", null).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Tunnistettu $found merkintää, lisätty/päivitetty $added tulevaa merkintää.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Tunnistettu $found merkintää, lisätty/päivitetty $added kalenteriin.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -325,9 +462,13 @@ class MainActivity : AppCompatActivity() {
             val y = mMatch.groupValues[2].toIntOrNull()
             if (m != null && y != null) return Pair(m, y)
         }
+        // Tunnistaa myös viikko-otsikon vuosiluvun, esim. "Vk. 42 / 2026"
+        val wkYear = Regex("""Vk\.?\s*\d{1,2}\s*/\s*(\d{4})""", RegexOption.IGNORE_CASE).find(pageText)?.groupValues?.get(1)?.toIntOrNull()
         val now = LocalDate.now()
         val uri = try { Uri.parse(currentUrl) } catch (e: Exception) { null }
-        return Pair(uri?.getQueryParameter("month")?.toIntOrNull() ?: now.monthValue, uri?.getQueryParameter("year")?.toIntOrNull() ?: now.year)
+        val m = uri?.getQueryParameter("month")?.toIntOrNull() ?: now.monthValue
+        val y = uri?.getQueryParameter("year")?.toIntOrNull() ?: wkYear ?: now.year
+        return Pair(m, y)
     }
 
     private fun extractDirectVacationRanges(text: String, defaultYear: Int, vacationDays: MutableList<LocalDate>): Int {
@@ -401,9 +542,10 @@ class MainActivity : AppCompatActivity() {
         val vacationDays = mutableListOf<LocalDate>()
         found += extractDirectVacationRanges(pageText, targetYear, vacationDays)
 
+        // Tunnistaa luettelon päivämääräotsikot kuten "MAANANTAI 19.10." tai "19.10.2026"
         val dateRe = Regex("""(?:(?:ma|ti|ke|to|pe|la|su|maanantai|tiistai|keskiviikko|torstai|perjantai|lauantai|sunnuntai)[\s.,]+(\d{1,2})\.(\d{1,2})(?:\.(\d{4})?)?|(?<![:\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})?)(?!\d)""", RegexOption.IGNORE_CASE)
         val matches = dateRe.findAll(pageText).toList()
-        if (matches.size >= 2) {
+        if (matches.isNotEmpty()) {
             for (i in matches.indices) {
                 val m = matches[i]
                 val d = (m.groupValues[1].ifEmpty { m.groupValues[4] }).toIntOrNull() ?: continue
@@ -412,7 +554,7 @@ class MainActivity : AppCompatActivity() {
                 if (d !in 1..31 || mo !in 1..12) continue
 
                 val sIdx = m.range.last + 1
-                val eIdx = if (i + 1 < matches.size) matches[i + 1].range.first else minOf(sIdx + 400, pageText.length)
+                val eIdx = if (i + 1 < matches.size) matches[i + 1].range.first else minOf(sIdx + 500, pageText.length)
                 if (sIdx >= eIdx) continue
                 val res = processListBlock(calId, d, mo, yr, pageText.substring(sIdx, eIdx).trim(), fmt, vacationDays)
                 found += res.first; added += res.second
@@ -420,29 +562,11 @@ class MainActivity : AppCompatActivity() {
             added += saveGroupedVacations(calId, vacationDays)
             if (found > 0) return Pair(found, added)
         }
-
-        if (!Regex("""Vk\.?\s+Ma\s+Ti\s+Ke""", RegexOption.IGNORE_CASE).containsMatchIn(pageText)) {
-            val altRe = Regex("""(?:^|\n)[\t ]*(?:(?:ma|ti|ke|to|pe|la|su)[a-zäöå.]*[\t ]+(\d{1,2})|(\d{1,2})\.?[\t ]+(?:ma|ti|ke|to|pe|la|su)[a-zäöå.]*)\b""", RegexOption.IGNORE_CASE)
-            val altM = altRe.findAll(pageText).toList()
-            if (altM.size >= 2) {
-                for (i in altM.indices) {
-                    val m = altM[i]
-                    val d = m.groupValues[1].ifEmpty { m.groupValues[2] }.toIntOrNull() ?: continue
-                    if (d !in 1..31) continue
-                    val sIdx = m.range.last + 1
-                    val eIdx = if (i + 1 < altM.size) altM[i + 1].range.first else minOf(sIdx + 400, pageText.length)
-                    if (sIdx >= eIdx) continue
-                    val res = processListBlock(calId, d, targetMonth, targetYear, pageText.substring(sIdx, eIdx).trim(), fmt, vacationDays)
-                    found += res.first; added += res.second
-                }
-                added += saveGroupedVacations(calId, vacationDays)
-            }
-        }
         return Pair(found, added)
     }
 
     private fun processListBlock(calId: Long, d: Int, m: Int, y: Int, block: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
-        if (block.lowercase().let { it.contains("loma") || Regex("""\bvl\b""").containsMatchIn(it) }) {
+        if (block.lowercase().let { it.contains("vuosiloma") || it.contains("loma") || Regex("""\bvl\b""").containsMatchIn(it) }) {
             try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
             return Pair(1, 0)
         }
@@ -466,7 +590,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun processDayContent(calId: Long, d: Int, m: Int, y: Int, txt: String, extra: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
         val rest = "${txt.replaceFirst(Regex("""^\d{1,2}\s*"""), "")} $extra".lowercase()
-        if (rest.contains("loma") || Regex("""\bvl\b""").containsMatchIn(rest)) {
+        if (rest.contains("vuosiloma") || rest.contains("loma") || Regex("""\bvl\b""").containsMatchIn(rest)) {
             try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
             return Pair(1, 0)
         }
@@ -488,7 +612,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, String> {
         val lines = raw.lines().map { it.trim() }.filter {
-            it.length > 2 && !it.equals("Uusi", true) && !it.equals("Valinnat", true) && !it.startsWith("Vk", true) && !Regex("""^\d{1,2}$""").matches(it)
+            it.length > 2 &&
+            !it.equals("Uusi", true) &&
+            !it.equals("Lisää uusi", true) &&
+            !it.equals("Valinnat", true) &&
+            !it.startsWith("Vk", true) &&
+            !it.startsWith("Viikko", true) &&
+            !Regex("""^\d{1,2}$""").matches(it)
         }
         if (lines.size >= 2) {
             val codeLine = lines.firstOrNull { Regex("""^\d{3,5}\b""").containsMatchIn(it) }
@@ -547,9 +677,7 @@ class MainActivity : AppCompatActivity() {
             val sMs = sDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
             val eMs = eDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
-            if (eMs < System.currentTimeMillis()) {
-                return false
-            }
+            if (eMs < System.currentTimeMillis()) return false
 
             val (loc, desc) = extractLocAndDesc(startStr, raw)
             scheduleShiftAlarms(sMs, eMs, desc.ifEmpty { "Työvuoro" })
@@ -585,54 +713,58 @@ class MainActivity : AppCompatActivity() {
             if (gapDays == 1L || isWeekendBridge) {
                 endDate = current
             } else {
-                if (insertOrExtendVacationPeriod(calId, startDate, endDate)) addedCount++
+                if (saveCleanVacationPeriod(calId, startDate, endDate)) addedCount++
                 startDate = current
                 endDate = current
             }
         }
-        if (insertOrExtendVacationPeriod(calId, startDate, endDate)) addedCount++
+        if (saveCleanVacationPeriod(calId, startDate, endDate)) addedCount++
         return addedCount
     }
 
-    private fun insertOrExtendVacationPeriod(calId: Long, startDate: LocalDate, endDate: LocalDate): Boolean {
+    private fun saveCleanVacationPeriod(calId: Long, startDate: LocalDate, endDate: LocalDate): Boolean {
         return try {
-            val sMs = startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-            val eMs = endDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+            var minStartMs = startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+            var maxEndMs = endDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
+            // Jos viereisellä viikolla on jo tallennettuna osa samasta lomasta, yhdistetään ne yhdeksi pitkäksi lomaksi!
+            val oneDayMs = 24 * 60 * 60 * 1000L
             val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DTSTART} <= ? AND ${CalendarContract.Events.DTEND} >= ? AND ${CalendarContract.Events.DELETED} = 0"
+            val args = arrayOf(calId.toString(), "Loma", (maxEndMs + oneDayMs).toString(), (minStartMs - oneDayMs).toString())
+
+            val existingIds = mutableListOf<Long>()
             contentResolver.query(
                 CalendarContract.Events.CONTENT_URI,
                 arrayOf(CalendarContract.Events._ID, CalendarContract.Events.DTSTART, CalendarContract.Events.DTEND),
-                sel,
-                arrayOf(calId.toString(), "Loma", eMs.toString(), sMs.toString()),
-                null
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val existingId = cursor.getLong(0)
-                    val curStart = cursor.getLong(1)
-                    val curEnd = cursor.getLong(2)
-                    val newStart = minOf(curStart, sMs)
-                    val newEnd = maxOf(curEnd, eMs)
-                    if (newStart != curStart || newEnd != curEnd) {
-                        val v = ContentValues().apply {
-                            put(CalendarContract.Events.DTSTART, newStart)
-                            put(CalendarContract.Events.DTEND, newEnd)
-                            put(CalendarContract.Events.ALL_DAY, 1)
-                            put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
-                        }
-                        contentResolver.update(CalendarContract.Events.CONTENT_URI, v, "${CalendarContract.Events._ID} = ?", arrayOf(existingId.toString()))
-                        return true
-                    }
-                    return false
+                sel, args, null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    existingIds.add(c.getLong(0))
+                    minStartMs = minOf(minStartMs, c.getLong(1))
+                    maxEndMs = maxOf(maxEndMs, c.getLong(2))
                 }
             }
 
-            insertEvent(calId, "Loma", "", "Vuosiloma", sMs, eMs, true)
+            if (existingIds.size == 1) {
+                val v = ContentValues().apply {
+                    put(CalendarContract.Events.DTSTART, minStartMs)
+                    put(CalendarContract.Events.DTEND, maxEndMs)
+                    put(CalendarContract.Events.ALL_DAY, 1)
+                    put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
+                }
+                contentResolver.update(CalendarContract.Events.CONTENT_URI, v, "${CalendarContract.Events._ID} = ?", arrayOf(existingIds[0].toString()))
+                return true
+            } else if (existingIds.size > 1) {
+                for (id in existingIds) {
+                    contentResolver.delete(CalendarContract.Events.CONTENT_URI, "${CalendarContract.Events._ID} = ?", arrayOf(id.toString()))
+                }
+            }
+
+            insertEvent(calId, "Loma", "", "Vuosiloma", minStartMs, maxEndMs, true)
             true
         } catch (e: Exception) { false }
     }
-
-    private fun getPrimaryCalendarId(): Long? {
+private fun getPrimaryCalendarId(): Long? {
         val proj = arrayOf(CalendarContract.Calendars._ID)
         contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, "${CalendarContract.Calendars.IS_PRIMARY} = 1", null, null)?.use {
             if (it.moveToFirst()) return it.getLong(0)
