@@ -128,7 +128,6 @@ class MainActivity : AppCompatActivity() {
                     for (var i = 0; i < tds.length; i++) {
                         var td = tds[i];
                         var cls = (td.className || "").toLowerCase();
-                        // Ohitetaan viikkonumerosarake (ensimmäinen td rivillä jos rivillä on 8 solua, tai week-luokka)
                         var isWeekCol = /week|vk|wk/.test(cls) || (td.parentElement && td.parentElement.children.length === 8 && td.cellIndex === 0);
                         if (isWeekCol) continue;
                         var isOther = /other|old|new|disabled|off|outside|gray|grey/.test(cls);
@@ -221,8 +220,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun parseListView(pageText: String, targetMonth: Int, targetYear: Int, calId: Long, fmt: DateTimeFormatter): Pair<Int, Int> {
         var found = 0; var added = 0
-        // Estetään pisteellisten kellonaikojen (esim. 07.00 tai 15.15) tulkinta päivämääriksi:
-        // Kuukauden jälkeen pitää olla joko piste (13.11.), vuosiluku (13.11.2026) tai edessä viikonpäivä (Pe 13.11)
         val dateRe = Regex("""(?:(?:ma|ti|ke|to|pe|la|su|maanantai|tiistai|keskiviikko|torstai|perjantai|lauantai|sunnuntai)[\s.,]+(\d{1,2})\.(\d{1,2})(?:\.(\d{4})?)?|(?<![:\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})?)(?!\d)""", RegexOption.IGNORE_CASE)
         val matches = dateRe.findAll(pageText).toList()
         if (matches.size >= 2) {
@@ -385,7 +382,7 @@ class MainActivity : AppCompatActivity() {
         contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), sel, arrayOf(calId.toString(), sMs.toString(), title), null)?.use {
             return it.count > 0
         }
-  return false
+        return false
     }
 
     private fun insertEvent(calId: Long, title: String, loc: String, desc: String, sMs: Long, eMs: Long, allDay: Boolean) {
