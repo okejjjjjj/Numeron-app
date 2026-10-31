@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.provider.CalendarContract
 import android.view.Gravity
@@ -29,8 +30,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
 
-    // VAIHDA TÄHÄN TYÖPAIKKASI NUMERON-OSOITE:
-    private val NUMERON_BASE_URL = "https://siunsote.numeronwfm.com"
+    private val URL_STAMPING = "https://siunsote.numeronwfm.com/WorktimeStamping"
+    private val URL_WISHES = "https://siunsote.numeronwfm.com/PersonRequests/List"
+    private val URL_CALENDAR = "https://siunsote.numeronwfm.com/Calendar/Month"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,26 +78,46 @@ class MainActivity : AppCompatActivity() {
         val buttonBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(8, 8, 8, 8)
+            setPadding(4, 8, 4, 8)
+            weightSum = 4f
+        }
+
+        val btnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = 4
+            marginEnd = 4
         }
 
         val btnStamp = Button(this).apply {
             text = "Leimaus"
-            setOnClickListener { clickElementByText(listOf("leima", "työaika", "kellokortti")) }
+            textSize = 11f
+            layoutParams = btnParams
+            setOnClickListener { webView.loadUrl(URL_STAMPING) }
         }
 
         val btnWishes = Button(this).apply {
             text = "Toiveet"
-            setOnClickListener { clickElementByText(listOf("toive", "suunnittelu", "vuorotoive")) }
+            textSize = 11f
+            layoutParams = btnParams
+            setOnClickListener { webView.loadUrl(URL_WISHES) }
+        }
+
+        val btnCalendar = Button(this).apply {
+            text = "Vuorot"
+            textSize = 11f
+            layoutParams = btnParams
+            setOnClickListener { webView.loadUrl(URL_CALENDAR) }
         }
 
         val btnSync = Button(this).apply {
-            text = "Kalenteriin"
+            text = "Vie -> GCal"
+            textSize = 11f
+            layoutParams = btnParams
             setOnClickListener { checkPermissionsAndSync() }
         }
 
         buttonBar.addView(btnStamp)
         buttonBar.addView(btnWishes)
+        buttonBar.addView(btnCalendar)
         buttonBar.addView(btnSync)
 
         rootLayout.addView(webView)
@@ -113,45 +135,22 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        webView.loadUrl(NUMERON_BASE_URL)
-    }
-
-    private fun clickElementByText(keywords: List<String>) {
-        val jsArray = keywords.joinToString(",") { "'$it'" }
-        val jsCode = """
-            (function() {
-                var words = [$jsArray];
-                var docs = [document];
-                var iframes = document.querySelectorAll('iframe');
-                for (var i = 0; i < iframes.length; i++) {
-                    try { if (iframes[i].contentDocument) docs.push(iframes[i].contentDocument); } catch(e) {}
-                }
-                for (var d = 0; d < docs.length; d++) {
-                    var elements = docs[d].querySelectorAll('a, button, span, div, li, input[type="button"]');
-                    for (var w = 0; w < words.length; w++) {
-                        for (var i = 0; i < elements.length; i++) {
-                            var el = elements[i];
-                            var txt = (el.innerText || el.value || "").trim().toLowerCase();
-                            if (txt.length > 0 && txt.length < 30 && txt.indexOf(words[w]) !== -1) {
-                                el.click();
-                                return "Klikattiin: " + txt;
-                            }
-                        }
-                    }
-                }
-                return "NOT_FOUND";
-            })();
-        """.trimIndent()
-
-        webView.evaluateJavascript(jsCode) { result ->
-            if (result != null && result.contains("NOT_FOUND")) {
-                Toast.makeText(this, "Valikkoa ei löytynyt tältä sivulta, ladataan etusivu...", Toast.LENGTH_SHORT).show()
-                webView.loadUrl(NUMERON_BASE_URL)
-            }
-        }
+        // Avataan suoraan leimaussivu käynnistyksessä
+        webView.loadUrl(URL_STAMPING)
     }
 
     private fun checkPermissionsAndSync() {
+        val currentUrl = webView.url ?: ""
+        if (!currentUrl.contains("/Calendar/")) {
+            Toast.makeText(
+                this,
+                "Avataan ensin vuorokalenteri. Paina 'Vie -> GCal' uudelleen, kun sivu on latautunut.",
+                Toast.LENGTH_LONG
+            ).show()
+            webView.loadUrl(URL_CALENDAR)
+            return
+        }
+
         val readPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR)
         val writePerm = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR)
 
@@ -182,7 +181,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractShiftsFromPage() {
-        // Lukee tekstin pääsivulta JA kaikista iframe-kehyksistä
         val jsCode = """
             (function() {
                 var text = document.body ? document.body.innerText : "";
@@ -194,7 +192,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch (e) {}
                 }
-                AndroidBridge.processPageText(text);
+                AndroidBridge.processPageText(text, window.location.href);
             })();
         """.trimIndent()
 
@@ -203,7 +201,7 @@ class MainActivity : AppCompatActivity() {
 
     inner class CalendarBridge {
         @JavascriptInterface
-        fun processPageText(pageText: String) {
+        fun processPageText(pageText: String, currentUrl: String) {
             runOnUiThread {
                 val calendarId = getPrimaryCalendarId()
                 if (calendarId == null) {
@@ -215,15 +213,15 @@ class MainActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
 
-                val result = parseAndInsertShifts(pageText, calendarId)
+                val result = parseAndInsertShifts(pageText, currentUrl, calendarId)
                 val foundCount = result.first
                 val addedCount = result.second
 
                 if (foundCount == 0) {
-                    val preview = if (pageText.length > 500) pageText.substring(0, 500) + "..." else pageText
+                    val preview = if (pageText.length > 600) pageText.substring(0, 600) + "..." else pageText
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("Vuoroja ei tunnistettu")
-                        .setMessage("Sivulta ei löytynyt päivämääriä ja kellonaikoja. Tässä näyte sivun tekstistä:\n\n$preview")
+                        .setMessage("Sivulta ei löytynyt vuoroja. Tässä näyte sivun tekstistä (voit kopioida tai ottaa kuvakaappauksen, niin säädetään luku täsmälliseksi):\n\n$preview")
                         .setPositiveButton("OK", null)
                         .show()
                 } else {
@@ -237,50 +235,95 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun parseAndInsertShifts(text: String, calendarId: Long): Pair<Int, Int> {
-        // Tunnistaa sekä "17.10.2026 07:00 - 15:15" että ilman vuosilukua "17.10. 07:00 - 15:15"
-        val regex = Regex("""(\d{1,2}\.\d{1,2}\.(?:\d{4})?)[\s\t]*\r?\n?[\s\t]*(\d{1,2}[:.]\d{2})[\s\t]*[-–][\s\t]*(\d{1,2}[:.]\d{2})(?:[\t ]+([^\n\r\d]+))?""")
-        val matches = regex.findAll(text)
+    private fun parseAndInsertShifts(text: String, currentUrl: String, calendarId: Long): Pair<Int, Int> {
         var foundCount = 0
         var addedCount = 0
 
-        val currentYear = LocalDate.now().year
+        // Tarkistetaan kuukausi ja vuosi osoitteesta (esim. ?month=11&year=2026)
+        val now = LocalDate.now()
+        val uri = try { Uri.parse(currentUrl) } catch (e: Exception) { null }
+        val targetMonth = uri?.getQueryParameter("month")?.toIntOrNull() ?: now.monthValue
+        val targetYear = uri?.getQueryParameter("year")?.toIntOrNull() ?: now.year
+
         val formatter = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
 
-        for (match in matches) {
-            foundCount++
-            var dateStr = match.groupValues[1].trim()
-            if (dateStr.endsWith(".")) {
-                dateStr += currentYear.toString()
-            }
+        // Tapa 1: Täysi tai puolipitkä päivämäärä (esim. "17.10.2026 07:00 - 15:15" tai "17.10. 07.00-15.15")
+        val fullDateRegex = Regex("""(\d{1,2}\.\d{1,2}\.(?:\d{4})?)[\s\t]*\r?\n?[\s\t]*(\d{1,2}[:.]\d{2})[\s\t]*[-–][\s\t]*(\d{1,2}[:.]\d{2})(?:[\t ]+([^\n\r\d]+))?""")
+        val fullMatches = fullDateRegex.findAll(text).toList()
 
+        if (fullMatches.isNotEmpty()) {
+            for (match in fullMatches) {
+                foundCount++
+                var dateStr = match.groupValues[1].trim()
+                if (dateStr.endsWith(".")) {
+                    dateStr += targetYear.toString()
+                }
+
+                val startStr = match.groupValues[2].trim().replace('.', ':')
+                val endStr = match.groupValues[3].trim().replace('.', ':')
+                val rawLocation = match.groupValues[4].trim()
+
+                if (saveShift(calendarId, dateStr, startStr, endStr, rawLocation, formatter)) {
+                    addedCount++
+                }
+            }
+            return Pair(foundCount, addedCount)
+        }
+
+        // Tapa 2: Kuukausinäkymä, jossa on pelkkä päivän numero (1-31) ja sen perässä/alla kellonaika
+        val dayOnlyRegex = Regex("""(?:\b|^)(\d{1,2})(?:\.)?[\s\t]*\r?\n[\s\t]*(\d{1,2}[:.]\d{2})[\s\t]*[-–][\s\t]*(\d{1,2}[:.]\d{2})(?:[\s\t]*\r?\n?[\t ]*([^\n\r\d]+))?""")
+        val dayMatches = dayOnlyRegex.findAll(text).toList()
+
+        for (match in dayMatches) {
+            val day = match.groupValues[1].toIntOrNull() ?: continue
+            if (day < 1 || day > 31) continue
+
+            foundCount++
+            val dateStr = "$day.$targetMonth.$targetYear"
             val startStr = match.groupValues[2].trim().replace('.', ':')
             val endStr = match.groupValues[3].trim().replace('.', ':')
             val rawLocation = match.groupValues[4].trim()
 
-            val unitName = if (rawLocation.length > 2) rawLocation else "Hoitokoti onni"
-            val title = "työvuoro, $unitName"
-
-            try {
-                val startDateTime = LocalDateTime.parse("$dateStr $startStr", formatter)
-                var endDateTime = LocalDateTime.parse("$dateStr $endStr", formatter)
-
-                if (endDateTime.isBefore(startDateTime)) {
-                    endDateTime = endDateTime.plusDays(1)
-                }
-
-                val startMillis = startDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                val endMillis = endDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-
-                if (!eventExists(calendarId, startMillis, endMillis)) {
-                    insertCalendarEvent(calendarId, title, startMillis, endMillis)
-                    addedCount++
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            if (saveShift(calendarId, dateStr, startStr, endStr, rawLocation, formatter)) {
+                addedCount++
             }
         }
+
         return Pair(foundCount, addedCount)
+    }
+
+    private fun saveShift(
+        calendarId: Long,
+        dateStr: String,
+        startStr: String,
+        endStr: String,
+        rawLocation: String,
+        formatter: DateTimeFormatter
+    ): Boolean {
+        val unitName = if (rawLocation.length > 2) rawLocation else "Hoitokoti onni"
+        val title = "työvuoro, $unitName"
+
+        return try {
+            val startDateTime = LocalDateTime.parse("$dateStr $startStr", formatter)
+            var endDateTime = LocalDateTime.parse("$dateStr $endStr", formatter)
+
+            if (endDateTime.isBefore(startDateTime)) {
+                endDateTime = endDateTime.plusDays(1)
+            }
+
+            val startMillis = startDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            val endMillis = endDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+            if (!eventExists(calendarId, startMillis, endMillis)) {
+                insertCalendarEvent(calendarId, title, startMillis, endMillis)
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
     }
 
     private fun getPrimaryCalendarId(): Long? {
