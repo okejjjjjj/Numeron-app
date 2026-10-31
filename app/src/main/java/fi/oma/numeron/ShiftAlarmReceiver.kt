@@ -9,12 +9,27 @@ import android.content.Intent
 import android.os.Build
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 class ShiftAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val shiftTitle = intent.getStringExtra("SHIFT_TITLE") ?: "Työvuoro"
         val isEnding = intent.getBooleanExtra("IS_ENDING", false)
-        val titleText = if (isEnding) "Vuoro päättyy 30 min kuluttua" else "Vuoro alkaa 30 min kuluttua"
+        val targetTimeMs = intent.getLongExtra("TARGET_TIME_MS", 0L)
+
+        val timeStr = if (targetTimeMs > 0L) {
+            Instant.ofEpochMilli(targetTimeMs)
+                .atZone(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("HH:mm"))
+        } else ""
+
+        val titleText = if (isEnding) {
+            if (timeStr.isNotEmpty()) "Vuoro päättyy klo $timeStr" else "Vuoro päättyy pian"
+        } else {
+            if (timeStr.isNotEmpty()) "Vuoro alkaa klo $timeStr" else "Vuoro alkaa pian"
+        }
         val btnText = if (isEnding) "LEIMAA ULOS" else "LEIMAA SISÄÄN"
 
         val channelId = "numeron_shift_channel"
@@ -53,7 +68,7 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             .setCustomBigContentView(customView)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setAutoCancel(true)
-            .setTimeoutAfter(60 * 60 * 1000L)
+            .setTimeoutAfter(60 * 60 * 1000L) // Häviää itsestään 60 minuutin kuluttua
             .setContentIntent(pi)
             .build()
 
