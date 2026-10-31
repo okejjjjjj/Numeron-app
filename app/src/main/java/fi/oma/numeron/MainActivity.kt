@@ -4,13 +4,16 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.CalendarContract
 import android.view.Gravity
+import android.view.View
 import android.webkit.*
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
@@ -25,6 +28,10 @@ import java.time.format.DateTimeFormatter
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private lateinit var btnSync: Button
+    private var pendingAutoStamp = false
+    private var pendingStampIsEnding = false
+
     private val URL_STAMPING = "https://siunsote.numeronwfm.com/WorktimeStamping"
     private val URL_WISHES = "https://siunsote.numeronwfm.com/PersonRequests/List"
     private val URL_CALENDAR = "https://siunsote.numeronwfm.com/Calendar/Month"
@@ -32,10 +39,12 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIncomingIntent(intent)
 
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(-1, -1)
+            setBackgroundColor(Color.parseColor("#121212"))
         }
 
         webView = WebView(this).apply {
@@ -53,6 +62,12 @@ class MainActivity : AppCompatActivity() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     CookieManager.getInstance().flush()
+                    val currentUrl = url ?: ""
+                    updateButtonVisibility(currentUrl)
+                    if (pendingAutoStamp && currentUrl.contains("/WorktimeStamping", ignoreCase = true)) {
+                        pendingAutoStamp = false
+                        performAutoStamp(pendingStampIsEnding)
+                    }
                 }
             }
             addJavascriptInterface(CalendarBridge(), "AndroidBridge")
@@ -66,23 +81,43 @@ class MainActivity : AppCompatActivity() {
         val buttonBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(4, 8, 4, 8)
-            weightSum = 5f
+            setPadding(8, 12, 8, 12)
+            setBackgroundColor(Color.parseColor("#1F1F1F"))
         }
 
-        fun makeBtn(label: String, action: () -> Unit) = Button(this).apply {
-            text = label
-            textSize = 10f
-            setPadding(2, 8, 2, 8)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = 2; marginEnd = 2 }
-            setOnClickListener { action() }
+        fun createStyledButton(label: String, bgColor: String = "#333333", action: () -> Unit): Button {
+            return Button(this).apply {
+                text = label
+                textSize = 11f
+                setTextColor(Color.WHITE)
+                isAllCaps = false
+                setPadding(2, 4, 2, 4)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = 4
+                    marginEnd = 4
+                }
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 16f
+                    setColor(Color.parseColor(bgColor))
+                }
+                setOnClickListener { action() }
+            }
         }
 
-        buttonBar.addView(makeBtn("Leimaus") { webView.loadUrl(URL_STAMPING) })
-        buttonBar.addView(makeBtn("Toiveet") { webView.loadUrl(URL_WISHES) })
-        buttonBar.addView(makeBtn("Vuorot") { webView.loadUrl(URL_CALENDAR) })
-        buttonBar.addView(makeBtn("GCal") { checkPermissionsAndSync() })
-        buttonBar.addView(makeBtn("Sulje") { finishAndRemoveTask() })
+        val btnStamp = createStyledButton("Leimaus") { webView.loadUrl(URL_STAMPING) }
+        val btnWishes = createStyledButton("Toiveet") { webView.loadUrl(URL_WISHES) }
+        val btnCalendar = createStyledButton("Vuorot") { webView.loadUrl(URL_CALENDAR) }
+        btnSync = createStyledButton("GCal", "#2E7D32") { checkPermissionsAndSync() }.apply {
+            visibility = View.GONE
+        }
+        val btnClose = createStyledButton("Sulje", "#5C2B29") { finishAndRemoveTask() }
+
+        buttonBar.addView(btnStamp)
+        buttonBar.addView(btnWishes)
+        buttonBar.addView(btnCalendar)
+        buttonBar.addView(btnSync)
+        buttonBar.addView(btnClose)
 
         rootLayout.addView(webView)
         rootLayout.addView(buttonBar)
@@ -98,17 +133,71 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(URL_STAMPING)
     }
 
-    private fun checkPermissionsAndSync() {
-        val currentUrl = webView.url ?: ""
-        if (!currentUrl.contains("/Calendar/", ignoreCase = true)) {
-            Toast.makeText(this, "Avataan vuorokalenteri. Paina 'GCal' uudelleen sivun latauduttua.", Toast.LENGTH_LONG).show()
-            webView.loadUrl(URL_CALENDAR)
-            return
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+        if (pendingAutoStamp && ::webView.isInitialized) {
+            webView.loadUrl(URL_STAMPING)
         }
-        val r = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR)
-        val w = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR)
-        if (r != PackageManager.PERMISSION_GRANTED || w != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR), 100)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("AUTO_STAMP", false) == true) {
+            pendingAutoStamp = true
+            pendingStampIsEnding = intent.getBooleanExtra("IS_ENDING", false)
+            intent.removeExtra("AUTO_STAMP")
+        }
+    }
+
+    private fun performAutoStamp(isEnding: Boolean) {
+        val targetKeyword = if (isEnding) "ulos" else "sisään"
+        val js = """
+            (function() {
+                var btns = document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn');
+                for (var i = 0; i < btns.length; i++) {
+                    var txt = (btns[i].innerText || btns[i].value || "").trim().toLowerCase();
+                    if (txt.indexOf('leimaa') !== -1 && txt.indexOf('$targetKeyword') !== -1) {
+                        btns[i].click();
+                        return "CLICKED:" + txt;
+                    }
+                }
+                for (var j = 0; j < btns.length; j++) {
+                    var t = (btns[j].innerText || btns[j].value || "").trim().toLowerCase();
+                    if (t.indexOf('leimaa sisään') !== -1 || t.indexOf('leimaa ulos') !== -1) {
+                        btns[j].click();
+                        return "CLICKED:" + t;
+                    }
+                }
+                return "NOT_FOUND";
+            })();
+        """.trimIndent()
+
+        webView.postDelayed({
+            webView.evaluateJavascript(js) { res ->
+                if (res != null && res.contains("CLICKED:")) {
+                    Toast.makeText(this, "Leimaus suoritettu automaattisesti!", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Tarkista kirjautuminen ja paina leimausnappia.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }, 800)
+    }
+
+    private fun updateButtonVisibility(url: String) {
+        val isCal = url.contains("/Calendar/", ignoreCase = true) ||
+                (webView.url?.contains("/Calendar/", ignoreCase = true) == true)
+        btnSync.visibility = if (isCal) View.VISIBLE else View.GONE
+    }
+
+    private fun checkPermissionsAndSync() {
+        val needed = mutableListOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val missing = needed.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
         } else {
             extractShiftsFromPage()
         }
@@ -116,8 +205,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 100 && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            extractShiftsFromPage()
+        if (requestCode == 100) {
+            val r = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
+            val w = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
+            if (r && w) extractShiftsFromPage()
         }
     }
 
@@ -193,6 +284,8 @@ class MainActivity : AppCompatActivity() {
         if (listRes.first > 0) return listRes
 
         var found = 0; var added = 0
+        val vacationDays = mutableListOf<LocalDate>()
+
         try {
             val arr = JSONArray(cellsJson)
             if (arr.length() > 15) {
@@ -213,16 +306,20 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (isOther) continue
 
-                    val res = processDayContent(calId, day, targetMonth, targetYear, txt, extra, fmt)
+                    val res = processDayContent(calId, day, targetMonth, targetYear, txt, extra, fmt, vacationDays)
                     found += res.first; added += res.second
                 }
             }
         } catch (e: Exception) { e.printStackTrace() }
+
+        added += saveGroupedVacations(calId, vacationDays)
         return Pair(found, added)
     }
 
     private fun parseListView(pageText: String, targetMonth: Int, targetYear: Int, calId: Long, fmt: DateTimeFormatter): Pair<Int, Int> {
         var found = 0; var added = 0
+        val vacationDays = mutableListOf<LocalDate>()
+
         val dateRe = Regex("""(?:(?:ma|ti|ke|to|pe|la|su|maanantai|tiistai|keskiviikko|torstai|perjantai|lauantai|sunnuntai)[\s.,]+(\d{1,2})\.(\d{1,2})(?:\.(\d{4})?)?|(?<![:\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})?)(?!\d)""", RegexOption.IGNORE_CASE)
         val matches = dateRe.findAll(pageText).toList()
         if (matches.size >= 2) {
@@ -236,9 +333,10 @@ class MainActivity : AppCompatActivity() {
                 val sIdx = m.range.last + 1
                 val eIdx = if (i + 1 < matches.size) matches[i + 1].range.first else minOf(sIdx + 400, pageText.length)
                 if (sIdx >= eIdx) continue
-                val res = processListBlock(calId, d, mo, yr, pageText.substring(sIdx, eIdx).trim(), fmt)
+                val res = processListBlock(calId, d, mo, yr, pageText.substring(sIdx, eIdx).trim(), fmt, vacationDays)
                 found += res.first; added += res.second
             }
+            added += saveGroupedVacations(calId, vacationDays)
             if (found > 0) return Pair(found, added)
         }
 
@@ -253,15 +351,16 @@ class MainActivity : AppCompatActivity() {
                     val sIdx = m.range.last + 1
                     val eIdx = if (i + 1 < altM.size) altM[i + 1].range.first else minOf(sIdx + 400, pageText.length)
                     if (sIdx >= eIdx) continue
-                    val res = processListBlock(calId, d, targetMonth, targetYear, pageText.substring(sIdx, eIdx).trim(), fmt)
+                    val res = processListBlock(calId, d, targetMonth, targetYear, pageText.substring(sIdx, eIdx).trim(), fmt, vacationDays)
                     found += res.first; added += res.second
                 }
+                added += saveGroupedVacations(calId, vacationDays)
             }
         }
         return Pair(found, added)
     }
 
-    private fun processListBlock(calId: Long, d: Int, m: Int, y: Int, block: String, fmt: DateTimeFormatter): Pair<Int, Int> {
+    private fun processListBlock(calId: Long, d: Int, m: Int, y: Int, block: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
         val sMatches = Regex("""(\d{1,2}[:.]\d{2})[\s\t]*[-–][\s\t]*(\d{1,2}[:.]\d{2})""").findAll(block).toList()
         if (sMatches.isNotEmpty()) {
             var added = 0
@@ -277,12 +376,13 @@ class MainActivity : AppCompatActivity() {
             return Pair(sMatches.size, added)
         }
         if (block.lowercase().let { it.contains("loma") || Regex("""\bvl\b""").containsMatchIn(it) }) {
-            return Pair(1, if (saveVacationDay(calId, d, m, y)) 1 else 0)
+            try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
+            return Pair(1, 0)
         }
         return Pair(0, 0)
     }
 
-    private fun processDayContent(calId: Long, d: Int, m: Int, y: Int, txt: String, extra: String, fmt: DateTimeFormatter): Pair<Int, Int> {
+    private fun processDayContent(calId: Long, d: Int, m: Int, y: Int, txt: String, extra: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
         val shifts = Regex("""(\d{1,2}[:.]\d{2})[\s\t\r\n]*[-–][\s\t\r\n]*(\d{1,2}[:.]\d{2})""").findAll(txt).toList()
         if (shifts.isNotEmpty()) {
             var added = 0
@@ -297,7 +397,8 @@ class MainActivity : AppCompatActivity() {
         }
         val rest = "${txt.replaceFirst(Regex("""^\d{1,2}\s*"""), "")} $extra".lowercase()
         if (rest.contains("loma") || Regex("""\bvl\b""").containsMatchIn(rest)) {
-            return Pair(1, if (saveVacationDay(calId, d, m, y)) 1 else 0)
+            try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
+            return Pair(1, 0)
         }
         return Pair(0, 0)
     }
@@ -318,26 +419,39 @@ class MainActivity : AppCompatActivity() {
         return Pair("", "$type hoitaja")
     }
 
-    private fun scheduleShiftAlarm(startMillis: Long, title: String) {
+    private fun scheduleShiftAlarms(startMillis: Long, endMillis: Long, title: String) {
         try {
             val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
-            val startAlarmTime = startMillis - (30 * 60 * 1000)
-            if (startAlarmTime > System.currentTimeMillis()) {
-                val intent = Intent(this, ShiftAlarmReceiver::class.java).apply {
+            val now = System.currentTimeMillis()
+
+            // 1. Ilmoitus 30 min ennen vuoron alkua (Leimaa Sisään)
+            val startAlarmTime = startMillis - (30 * 60 * 1000L)
+            if (startAlarmTime > now) {
+                val startIntent = Intent(this, ShiftAlarmReceiver::class.java).apply {
                     putExtra("SHIFT_TITLE", title)
                     putExtra("IS_ENDING", false)
                 }
-                val pendingIntent = PendingIntent.getBroadcast(
-                    this,
-                    startAlarmTime.toInt(),
-                    intent,
+                val startReqCode = (startAlarmTime / 60000L).toInt()
+                val startPi = PendingIntent.getBroadcast(
+                    this, startReqCode, startIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
-                alarmManager.setExactAndAllowWhileIdle(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    startAlarmTime,
-                    pendingIntent
+                alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, startAlarmTime, startPi)
+            }
+
+            // 2. Ilmoitus 30 min ennen vuoron loppua (Leimaa Ulos)
+            val endAlarmTime = endMillis - (30 * 60 * 1000L)
+            if (endAlarmTime > now) {
+                val endIntent = Intent(this, ShiftAlarmReceiver::class.java).apply {
+                    putExtra("SHIFT_TITLE", title)
+                    putExtra("IS_ENDING", true)
+                }
+                val endReqCode = (endAlarmTime / 60000L).toInt() + 1
+                val endPi = PendingIntent.getBroadcast(
+                    this, endReqCode, endIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
+                alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, endAlarmTime, endPi)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -353,22 +467,49 @@ class MainActivity : AppCompatActivity() {
             val eMs = eDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
             val (loc, desc) = extractLocAndDesc(startStr, raw)
             val exId = findEventId(calId, sMs, eMs)
+            val isPastShift = eMs < System.currentTimeMillis()
+
+            if (!isPastShift) {
+                scheduleShiftAlarms(sMs, eMs, desc.ifEmpty { "Työvuoro" })
+            }
+
             if (exId == null) {
                 insertEvent(calId, "Työvuoro", loc, desc, sMs, eMs, false)
-                scheduleShiftAlarm(sMs, desc)
                 true
-            } else if (loc.isNotEmpty()) {
+            } else if (loc.isNotEmpty() && !isPastShift) {
                 updateEvent(exId, loc, desc)
             } else false
         } catch (e: Exception) { false }
     }
 
-    private fun saveVacationDay(calId: Long, d: Int, m: Int, y: Int): Boolean {
+    private fun saveGroupedVacations(calId: Long, rawDays: List<LocalDate>): Int {
+        val days = rawDays.distinct().sorted()
+        if (days.isEmpty()) return 0
+        var addedCount = 0
+
+        var startDate = days[0]
+        var endDate = days[0]
+
+        for (i in 1 until days.size) {
+            val current = days[i]
+            if (current == endDate.plusDays(1)) {
+                endDate = current
+            } else {
+                if (insertVacationPeriod(calId, startDate, endDate)) addedCount++
+                startDate = current
+                endDate = current
+            }
+        }
+        if (insertVacationPeriod(calId, startDate, endDate)) addedCount++
+        return addedCount
+    }
+
+    private fun insertVacationPeriod(calId: Long, startDate: LocalDate, endDate: LocalDate): Boolean {
         return try {
-            val date = LocalDate.of(y, m, d)
-            val sMs = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-            val eMs = date.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-            if (!allDayExists(calId, "Loma", sMs)) {
+            val sMs = startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+            val eMs = endDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+            if (!vacationPeriodExists(calId, sMs, eMs)) {
                 insertEvent(calId, "Loma", "", "Vuosiloma", sMs, eMs, true)
                 true
             } else false
@@ -407,9 +548,10 @@ class MainActivity : AppCompatActivity() {
         return contentResolver.update(CalendarContract.Events.CONTENT_URI, v, "${CalendarContract.Events._ID} = ?", arrayOf(eventId.toString())) > 0
     }
 
-    private fun allDayExists(calId: Long, title: String, sMs: Long): Boolean {
-        val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DELETED} = 0"
-        contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), sel, arrayOf(calId.toString(), sMs.toString(), title), null)?.use {
+    private fun vacationPeriodExists(calId: Long, sMs: Long, eMs: Long): Boolean {
+        // Estää uuden lomamerkinnän luonnin, jos samalle aikavälille on jo olemassa Loma-merkintä
+        val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} <= ? AND ${CalendarContract.Events.DTEND} >= ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DELETED} = 0"
+        contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), sel, arrayOf(calId.toString(), sMs.toString(), eMs.toString(), "Loma"), null)?.use {
             return it.count > 0
         }
         return false
