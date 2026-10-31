@@ -70,7 +70,27 @@ class MainActivity : AppCompatActivity() {
                 builtInZoomControls = true
                 displayZoomControls = false
             }
-            webChromeClient = WebChromeClient()
+            webChromeClient = object : WebChromeClient() {
+                override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                    val msg = (message ?: "").lowercase()
+                    if (msg.contains("istunto") || msg.contains("session") || msg.contains("vanhentu") || msg.contains("kirjaudu")) {
+                        result?.confirm()
+                        view?.loadUrl(URL_STAMPING)
+                        return true
+                    }
+                    return super.onJsAlert(view, url, message, result)
+                }
+
+                override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                    val msg = (message ?: "").lowercase()
+                    if (msg.contains("istunto") || msg.contains("session") || msg.contains("vanhentu") || msg.contains("kirjaudu")) {
+                        result?.confirm()
+                        view?.loadUrl(URL_STAMPING)
+                        return true
+                    }
+                    return super.onJsConfirm(view, url, message, result)
+                }
+            }
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
@@ -79,7 +99,7 @@ class MainActivity : AppCompatActivity() {
                     updateNavigationState(currentUrl)
                     tryAutoLoginIfNeeded()
 
-                    if (pendingAutoStamp && currentUrl.contains("/WorktimeStamping", ignoreCase = true)) {
+                    if (pendingAutoStamp && currentUrl.contains("/WorktimeStamping", ignoreCase = true) && !currentUrl.contains("login", ignoreCase = true)) {
                         pendingAutoStamp = false
                         performAutoStamp(pendingStampIsEnding)
                     } else if (waitingForListViewSync && currentUrl.contains("/Calendar/", ignoreCase = true)) {
@@ -150,7 +170,6 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Kysytään ensimmäisellä käynnistyksellä haluaako tallentaa tunnukset
         val prefs = getSharedPreferences("numeron_prefs", MODE_PRIVATE)
         if (!prefs.contains("asked_creds")) {
             prefs.edit().putBoolean("asked_creds", true).apply()
@@ -158,6 +177,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.loadUrl(URL_STAMPING)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::webView.isInitialized) {
+            tryAutoLoginIfNeeded()
+        }
     }
 
     private fun styleButton(btn: Button, bgColor: String, isSelected: Boolean) {
@@ -179,7 +205,6 @@ class MainActivity : AppCompatActivity() {
         val isWishes = u.contains("/PersonRequests/", ignoreCase = true)
         val isStamp = u.contains("/WorktimeStamping", ignoreCase = true) || (!isCal && !isWishes)
 
-        // Kun ollaan kalenterissa, Vuorot-nappi poistuu ja tilalle tulee Vie kalenteriin
         btnCalendar.visibility = if (isCal) View.GONE else View.VISIBLE
         btnSync.visibility = if (isCal) View.VISIBLE else View.GONE
 
@@ -228,43 +253,93 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Peruuta", null)
             .show()
     }
-
+    
     private fun tryAutoLoginIfNeeded() {
-        val now = System.currentTimeMillis()
-        if (now - lastAutoLoginAttempt < 4000L) return
-
         val prefs = getSharedPreferences("numeron_prefs", MODE_PRIVATE)
         val u = prefs.getString("username", "") ?: ""
         val p = prefs.getString("password", "") ?: ""
-        if (u.isEmpty() || p.isEmpty()) return
 
         val safeU = u.replace("\\", "\\\\").replace("'", "\\'")
         val safeP = p.replace("\\", "\\\\").replace("'", "\\'")
 
         val js = """
             (function() {
+                var bodyTxt = (document.body ? document.body.innerText : "").toLowerCase();
                 var passInputs = document.querySelectorAll('input[type="password"]');
-                if (passInputs.length === 0) return "NO_LOGIN_FORM";
-                var passEl = null;
+                var hasVisiblePass = false;
                 for (var i = 0; i < passInputs.length; i++) {
-                    if (passInputs[i].offsetParent !== null) { passEl = passInputs[i]; break; }
+                    if (passInputs[i].offsetParent !== null) { hasVisiblePass = true; break; }
                 }
-                if (!passEl) return "NO_VISIBLE_PASS";
 
-                var userEl = document.querySelector('input[type="email"], input[name*="user" i], input[name*="login" i], input[id*="user" i], input[type="text"]');
-                if (userEl && !userEl.value) {
-                    userEl.value = '$safeU';
-                    userEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    userEl.dispatchEvent(new Event('change', { bubbles: true }));
+                if (!hasVisiblePass && (bodyTxt.indexOf('istunto on vanhentunut') !== -1 || bodyTxt.indexOf('istuntosi on vanhentunut') !== -1 || bodyTxt.indexOf('session expired') !== -1 || bodyTxt.indexOf('kirjaudu sisään uudelleen') !== -1 || bodyTxt.indexOf('uloskirjattu') !== -1)) {
+                    var btns = document.querySelectorAll('button, a, input[type="button"], input[type="submit"]');
+                    for (var b = 0; b < btns.length; b++) {
+                        if (btns[b].offsetParent === null) continue;
+                        var t = (btns[b].innerText || btns[b].value || "").trim().toLowerCase();
+                        if (t.indexOf('kirjaudu') !== -1 || t === 'ok' || t.indexOf('jatka') !== -1 || t.indexOf('uudelleen') !== -1 || t.indexOf('alkuun') !== -1) {
+                            btns[b].click();
+                            return "SESSION_EXPIRED_CLICKED";
+                        }
+                    }
+                    return "SESSION_EXPIRED_RELOAD";
                 }
-                passEl.value = '$safeP';
-                passEl.dispatchEvent(new Event('input', { bubbles: true }));
-                passEl.dispatchEvent(new Event('change', { bubbles: true }));
 
-                var submitBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="login" i], button[name*="login" i]');
-                if (submitBtn) {
+                if ('$safeU' === '' || '$safeP' === '') return "NO_CREDS";
+
+                function setNativeValue(el, val) {
+                    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                    if (setter) setter.call(el, val);
+                    else el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+
+                var userInputs = document.querySelectorAll('input[type="email"], input[name*="user" i], input[name*="login" i], input[id*="user" i], input[name*="fmt" i], input[type="text"]');
+                var userEl = null;
+                for (var uIdx = 0; uIdx < userInputs.length; uIdx++) {
+                    var inp = userInputs[uIdx];
+                    if (inp.offsetParent !== null && !inp.readOnly && !inp.disabled) {
+                        userEl = inp;
+                        break;
+                    }
+                }
+
+                var passEl = null;
+                for (var pIdx = 0; pIdx < passInputs.length; pIdx++) {
+                    if (passInputs[pIdx].offsetParent !== null && !passInputs[pIdx].disabled) {
+                        passEl = passInputs[pIdx];
+                        break;
+                    }
+                }
+
+                if (userEl && !passEl && (window.location.href.toLowerCase().indexOf('login') !== -1 || window.location.href.toLowerCase().indexOf('auth') !== -1 || window.location.href.toLowerCase().indexOf('microsoft') !== -1 || bodyTxt.indexOf('kirjaudu') !== -1)) {
+                    setNativeValue(userEl, '$safeU');
+                    var nextBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="next" i], input[id*="next" i]');
+                    if (nextBtn && nextBtn.offsetParent !== null) {
+                        nextBtn.click();
+                        return "USER_STEP_SUBMITTED";
+                    }
+                }
+
+                if (!passEl) return "NO_LOGIN_FORM";
+
+                if (userEl) {
+                    setNativeValue(userEl, '$safeU');
+                }
+                setNativeValue(passEl, '$safeP');
+
+                var submitBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="login" i], button[name*="login" i], input[id*="SignIn" i]');
+                if (submitBtn && submitBtn.offsetParent !== null) {
                     submitBtn.click();
                     return "SUBMITTED";
+                }
+                var allBtns = document.querySelectorAll('button, a.btn, input[type="button"]');
+                for (var k = 0; k < allBtns.length; k++) {
+                    var bt = (allBtns[k].innerText || allBtns[k].value || "").trim().toLowerCase();
+                    if (bt.indexOf('kirjaudu') !== -1 || bt.indexOf('sign in') !== -1 || bt.indexOf('jatka') !== -1) {
+                        allBtns[k].click();
+                        return "SUBMITTED";
+                    }
                 }
                 if (passEl.form) {
                     passEl.form.submit();
@@ -275,9 +350,22 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()
 
         webView.evaluateJavascript(js) { res ->
-            if (res != null && res.contains("SUBMITTED")) {
-                lastAutoLoginAttempt = System.currentTimeMillis()
-                Toast.makeText(this, "Kirjaudutaan sisään automaattisesti...", Toast.LENGTH_SHORT).show()
+            val r = res ?: ""
+            val now = System.currentTimeMillis()
+            when {
+                r.contains("SESSION_EXPIRED_RELOAD") -> webView.loadUrl(URL_STAMPING)
+                r.contains("SESSION_EXPIRED_CLICKED") || r.contains("USER_STEP_SUBMITTED") -> {
+                    webView.postDelayed({ tryAutoLoginIfNeeded() }, 1200)
+                }
+                r.contains("SUBMITTED") -> {
+                    if (now - lastAutoLoginAttempt > 4000L) {
+                        lastAutoLoginAttempt = now
+                        Toast.makeText(this, "Istunto uusittu automaattisesti", Toast.LENGTH_SHORT).show()
+                    }
+                    if (pendingAutoStamp) {
+                        webView.postDelayed({ webView.loadUrl(URL_STAMPING) }, 2500)
+                    }
+                }
             }
         }
     }
@@ -462,7 +550,6 @@ class MainActivity : AppCompatActivity() {
             val y = mMatch.groupValues[2].toIntOrNull()
             if (m != null && y != null) return Pair(m, y)
         }
-        // Tunnistaa myös viikko-otsikon vuosiluvun, esim. "Vk. 42 / 2026"
         val wkYear = Regex("""Vk\.?\s*\d{1,2}\s*/\s*(\d{4})""", RegexOption.IGNORE_CASE).find(pageText)?.groupValues?.get(1)?.toIntOrNull()
         val now = LocalDate.now()
         val uri = try { Uri.parse(currentUrl) } catch (e: Exception) { null }
@@ -542,7 +629,6 @@ class MainActivity : AppCompatActivity() {
         val vacationDays = mutableListOf<LocalDate>()
         found += extractDirectVacationRanges(pageText, targetYear, vacationDays)
 
-        // Tunnistaa luettelon päivämääräotsikot kuten "MAANANTAI 19.10." tai "19.10.2026"
         val dateRe = Regex("""(?:(?:ma|ti|ke|to|pe|la|su|maanantai|tiistai|keskiviikko|torstai|perjantai|lauantai|sunnuntai)[\s.,]+(\d{1,2})\.(\d{1,2})(?:\.(\d{4})?)?|(?<![:\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})?)(?!\d)""", RegexOption.IGNORE_CASE)
         val matches = dateRe.findAll(pageText).toList()
         if (matches.isNotEmpty()) {
@@ -727,7 +813,6 @@ class MainActivity : AppCompatActivity() {
             var minStartMs = startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
             var maxEndMs = endDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
-            // Jos viereisellä viikolla on jo tallennettuna osa samasta lomasta, yhdistetään ne yhdeksi pitkäksi lomaksi!
             val oneDayMs = 24 * 60 * 60 * 1000L
             val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DTSTART} <= ? AND ${CalendarContract.Events.DTEND} >= ? AND ${CalendarContract.Events.DELETED} = 0"
             val args = arrayOf(calId.toString(), "Loma", (maxEndMs + oneDayMs).toString(), (minStartMs - oneDayMs).toString())
@@ -764,7 +849,8 @@ class MainActivity : AppCompatActivity() {
             true
         } catch (e: Exception) { false }
     }
-private fun getPrimaryCalendarId(): Long? {
+
+    private fun getPrimaryCalendarId(): Long? {
         val proj = arrayOf(CalendarContract.Calendars._ID)
         contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, "${CalendarContract.Calendars.IS_PRIMARY} = 1", null, null)?.use {
             if (it.moveToFirst()) return it.getLong(0)
