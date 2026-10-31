@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import java.time.*
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -257,7 +258,7 @@ class MainActivity : AppCompatActivity() {
                         .setMessage("Näkymästä ei tunnistettu vuoroja. Tekstinäyte:\n\n$prev")
                         .setPositiveButton("OK", null).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Löytyi $found merkintää, lisätty/päivitetty $added kalenteriin.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Tunnistettu $found merkintää, lisätty/päivitetty $added tulevaa merkintää.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -276,6 +277,32 @@ class MainActivity : AppCompatActivity() {
         return Pair(uri?.getQueryParameter("month")?.toIntOrNull() ?: now.monthValue, uri?.getQueryParameter("year")?.toIntOrNull() ?: now.year)
     }
 
+    private fun extractDirectVacationRanges(text: String, defaultYear: Int, vacationDays: MutableList<LocalDate>): Int {
+        var foundRanges = 0
+        // Tunnistaa suorat lomajaksot tekstistä, esim. "16.11. - 22.11. Vuosiloma" tai "16. - 22.11.2026 Loma"
+        val rangeRegex = Regex("""(\d{1,2})\.(?:(\d{1,2})\.)?(?:\d{4})?\s*[-–]\s*(\d{1,2})\.(\d{1,2})\.?(?:(\d{4}))?[^\n\r]*(?:loma|\bvl\b)""", RegexOption.IGNORE_CASE)
+        for (m in rangeRegex.findAll(text)) {
+            val d1 = m.groupValues[1].toIntOrNull() ?: continue
+            val d2 = m.groupValues[3].toIntOrNull() ?: continue
+            val m2 = m.groupValues[4].toIntOrNull() ?: continue
+            val m1 = m.groupValues[2].toIntOrNull() ?: m2
+            val y2 = m.groupValues[5].toIntOrNull() ?: defaultYear
+            val y1 = if (m1 > m2) y2 - 1 else y2
+            try {
+                var cur = LocalDate.of(y1, m1, d1)
+                val end = LocalDate.of(y2, m2, d2)
+                if (!end.isBefore(cur) && ChronoUnit.DAYS.between(cur, end) <= 45) {
+                    foundRanges++
+                    while (!cur.isAfter(end)) {
+                        vacationDays.add(cur)
+                        cur = cur.plusDays(1)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return foundRanges
+    }
+
     private fun parseAndInsertCalendar(cellsJson: String, pageText: String, currentUrl: String, calId: Long): Pair<Int, Int> {
         val (targetMonth, targetYear) = resolveMonthAndYear(pageText, currentUrl)
         val fmt = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
@@ -285,6 +312,7 @@ class MainActivity : AppCompatActivity() {
 
         var found = 0; var added = 0
         val vacationDays = mutableListOf<LocalDate>()
+        found += extractDirectVacationRanges(pageText, targetYear, vacationDays)
 
         try {
             val arr = JSONArray(cellsJson)
@@ -319,6 +347,7 @@ class MainActivity : AppCompatActivity() {
     private fun parseListView(pageText: String, targetMonth: Int, targetYear: Int, calId: Long, fmt: DateTimeFormatter): Pair<Int, Int> {
         var found = 0; var added = 0
         val vacationDays = mutableListOf<LocalDate>()
+        found += extractDirectVacationRanges(pageText, targetYear, vacationDays)
 
         val dateRe = Regex("""(?:(?:ma|ti|ke|to|pe|la|su|maanantai|tiistai|keskiviikko|torstai|perjantai|lauantai|sunnuntai)[\s.,]+(\d{1,2})\.(\d{1,2})(?:\.(\d{4})?)?|(?<![:\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})?)(?!\d)""", RegexOption.IGNORE_CASE)
         val matches = dateRe.findAll(pageText).toList()
@@ -361,6 +390,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processListBlock(calId: Long, d: Int, m: Int, y: Int, block: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
+        // Jos lohkossa mainitaan loma, käsitellään se aina lomana (myös jos siellä on laskennallinen klo 08:00 - 15:39)
+        if (block.lowercase().let { it.contains("loma") || Regex("""\bvl\b""").containsMatchIn(it) }) {
+            try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
+            return Pair(1, 0)
+        }
+
         val sMatches = Regex("""(\d{1,2}[:.]\d{2})[\s\t]*[-–][\s\t]*(\d{1,2}[:.]\d{2})""").findAll(block).toList()
         if (sMatches.isNotEmpty()) {
             var added = 0
@@ -375,14 +410,16 @@ class MainActivity : AppCompatActivity() {
             }
             return Pair(sMatches.size, added)
         }
-        if (block.lowercase().let { it.contains("loma") || Regex("""\bvl\b""").containsMatchIn(it) }) {
-            try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
-            return Pair(1, 0)
-        }
         return Pair(0, 0)
     }
 
     private fun processDayContent(calId: Long, d: Int, m: Int, y: Int, txt: String, extra: String, fmt: DateTimeFormatter, vacationDays: MutableList<LocalDate>): Pair<Int, Int> {
+        val rest = "${txt.replaceFirst(Regex("""^\d{1,2}\s*"""), "")} $extra".lowercase()
+        if (rest.contains("loma") || Regex("""\bvl\b""").containsMatchIn(rest)) {
+            try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
+            return Pair(1, 0)
+        }
+
         val shifts = Regex("""(\d{1,2}[:.]\d{2})[\s\t\r\n]*[-–][\s\t\r\n]*(\d{1,2}[:.]\d{2})""").findAll(txt).toList()
         if (shifts.isNotEmpty()) {
             var added = 0
@@ -394,11 +431,6 @@ class MainActivity : AppCompatActivity() {
                 if (saveWorkShift(calId, "$d.$m.$y", s, e, comb, fmt)) added++
             }
             return Pair(shifts.size, added)
-        }
-        val rest = "${txt.replaceFirst(Regex("""^\d{1,2}\s*"""), "")} $extra".lowercase()
-        if (rest.contains("loma") || Regex("""\bvl\b""").containsMatchIn(rest)) {
-            try { vacationDays.add(LocalDate.of(y, m, d)) } catch (_: Exception) {}
-            return Pair(1, 0)
         }
         return Pair(0, 0)
     }
@@ -424,7 +456,6 @@ class MainActivity : AppCompatActivity() {
             val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
             val now = System.currentTimeMillis()
 
-            // 1. Ilmoitus 30 min ennen vuoron alkua (Leimaa Sisään)
             val startAlarmTime = startMillis - (30 * 60 * 1000L)
             if (startAlarmTime > now) {
                 val startIntent = Intent(this, ShiftAlarmReceiver::class.java).apply {
@@ -439,7 +470,6 @@ class MainActivity : AppCompatActivity() {
                 alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, startAlarmTime, startPi)
             }
 
-            // 2. Ilmoitus 30 min ennen vuoron loppua (Leimaa Ulos)
             val endAlarmTime = endMillis - (30 * 60 * 1000L)
             if (endAlarmTime > now) {
                 val endIntent = Intent(this, ShiftAlarmReceiver::class.java).apply {
@@ -465,18 +495,24 @@ class MainActivity : AppCompatActivity() {
             if (eDt.isBefore(sDt)) eDt = eDt.plusDays(1)
             val sMs = sDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
             val eMs = eDt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-            val (loc, desc) = extractLocAndDesc(startStr, raw)
-            val exId = findEventId(calId, sMs, eMs)
-            val isPastShift = eMs < System.currentTimeMillis()
 
-            if (!isPastShift) {
-                scheduleShiftAlarms(sMs, eMs, desc.ifEmpty { "Työvuoro" })
+            // EHDOTON ESTO: Jos työvuoro on jo mennyt, ei lisätä toteutuneita leimausaikoja eikä muokata vanhoja
+            if (eMs < System.currentTimeMillis()) {
+                return false
             }
+
+            val (loc, desc) = extractLocAndDesc(startStr, raw)
+            scheduleShiftAlarms(sMs, eMs, desc.ifEmpty { "Työvuoro" })
+
+            // Etsitään saman päivän työvuoroa (vaikka kellonaika olisi muuttunut muutamalla minuutilla)
+            val dayStartMs = sDt.toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            val dayEndMs = sDt.toLocalDate().plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            val exId = findShiftOnSameDay(calId, sMs, eMs, dayStartMs, dayEndMs)
 
             if (exId == null) {
                 insertEvent(calId, "Työvuoro", loc, desc, sMs, eMs, false)
                 true
-            } else if (loc.isNotEmpty() && !isPastShift) {
+            } else if (loc.isNotEmpty()) {
                 updateEvent(exId, loc, desc)
             } else false
         } catch (e: Exception) { false }
@@ -492,27 +528,60 @@ class MainActivity : AppCompatActivity() {
 
         for (i in 1 until days.size) {
             val current = days[i]
-            if (current == endDate.plusDays(1)) {
+            val gapDays = ChronoUnit.DAYS.between(endDate, current)
+            // Yhdistetään peräkkäiset päivät TAI jos välissä on pelkkä viikonloppu (la-su), johon Numeron ei ole merkinnyt VL-koodia
+            val isWeekendBridge = gapDays in 2..3 &&
+                    (endDate.dayOfWeek == DayOfWeek.FRIDAY || endDate.dayOfWeek == DayOfWeek.SATURDAY) &&
+                    current.dayOfWeek == DayOfWeek.MONDAY
+
+            if (gapDays == 1L || isWeekendBridge) {
                 endDate = current
             } else {
-                if (insertVacationPeriod(calId, startDate, endDate)) addedCount++
+                if (insertOrExtendVacationPeriod(calId, startDate, endDate)) addedCount++
                 startDate = current
                 endDate = current
             }
         }
-        if (insertVacationPeriod(calId, startDate, endDate)) addedCount++
+        if (insertOrExtendVacationPeriod(calId, startDate, endDate)) addedCount++
         return addedCount
     }
 
-    private fun insertVacationPeriod(calId: Long, startDate: LocalDate, endDate: LocalDate): Boolean {
+    private fun insertOrExtendVacationPeriod(calId: Long, startDate: LocalDate, endDate: LocalDate): Boolean {
         return try {
             val sMs = startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
             val eMs = endDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
-            if (!vacationPeriodExists(calId, sMs, eMs)) {
-                insertEvent(calId, "Loma", "", "Vuosiloma", sMs, eMs, true)
-                true
-            } else false
+            // Jos kalenterissa on jo "Loma" samalla aloituspäivällä (esim. vanha 1 pv merkintä), pidennetään se kattamaan koko loma
+            val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DTSTART} <= ? AND ${CalendarContract.Events.DTEND} >= ? AND ${CalendarContract.Events.DELETED} = 0"
+            contentResolver.query(
+                CalendarContract.Events.CONTENT_URI,
+                arrayOf(CalendarContract.Events._ID, CalendarContract.Events.DTSTART, CalendarContract.Events.DTEND),
+                sel,
+                arrayOf(calId.toString(), "Loma", eMs.toString(), sMs.toString()),
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val existingId = cursor.getLong(0)
+                    val curStart = cursor.getLong(1)
+                    val curEnd = cursor.getLong(2)
+                    val newStart = minOf(curStart, sMs)
+                    val newEnd = maxOf(curEnd, eMs)
+                    if (newStart != curStart || newEnd != curEnd) {
+                        val v = ContentValues().apply {
+                            put(CalendarContract.Events.DTSTART, newStart)
+                            put(CalendarContract.Events.DTEND, newEnd)
+                            put(CalendarContract.Events.ALL_DAY, 1)
+                            put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
+                        }
+                        contentResolver.update(CalendarContract.Events.CONTENT_URI, v, "${CalendarContract.Events._ID} = ?", arrayOf(existingId.toString()))
+                        return true
+                    }
+                    return false
+                }
+            }
+
+            insertEvent(calId, "Loma", "", "Vuosiloma", sMs, eMs, true)
+            true
         } catch (e: Exception) { false }
     }
 
@@ -527,10 +596,21 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    private fun findEventId(calId: Long, sMs: Long, eMs: Long): Long? {
-        val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.DTEND} = ? AND ${CalendarContract.Events.DELETED} = 0"
-        contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), sel, arrayOf(calId.toString(), sMs.toString(), eMs.toString()), null)?.use {
+    private fun findShiftOnSameDay(calId: Long, sMs: Long, eMs: Long, dayStartMs: Long, dayEndMs: Long): Long? {
+        // 1. Täsmällinen kellonaika
+        val exactSel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.DTEND} = ? AND ${CalendarContract.Events.DELETED} = 0"
+        contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), exactSel, arrayOf(calId.toString(), sMs.toString(), eMs.toString()), null)?.use {
             if (it.moveToFirst()) return it.getLong(0)
+        }
+        // 2. Saman päivän Työvuoro, jonka aloitusaika on lähellä (estää tuplat jos minuutit muuttuvat)
+        val daySel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DTSTART} >= ? AND ${CalendarContract.Events.DTSTART} < ? AND ${CalendarContract.Events.DELETED} = 0"
+        contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID, CalendarContract.Events.DTSTART), daySel, arrayOf(calId.toString(), "Työvuoro", dayStartMs.toString(), dayEndMs.toString()), null)?.use {
+            while (it.moveToNext()) {
+                val existingStart = it.getLong(1)
+                if ( kotlin.math.abs(existingStart - sMs) <= 2 * 60 * 60 * 1000L ) {
+                    return it.getLong(0)
+                }
+            }
         }
         return null
     }
@@ -546,15 +626,6 @@ class MainActivity : AppCompatActivity() {
             put(CalendarContract.Events.DESCRIPTION, desc)
         }
         return contentResolver.update(CalendarContract.Events.CONTENT_URI, v, "${CalendarContract.Events._ID} = ?", arrayOf(eventId.toString())) > 0
-    }
-
-    private fun vacationPeriodExists(calId: Long, sMs: Long, eMs: Long): Boolean {
-        // Estää uuden lomamerkinnän luonnin, jos samalle aikavälille on jo olemassa Loma-merkintä
-        val sel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} <= ? AND ${CalendarContract.Events.DTEND} >= ? AND ${CalendarContract.Events.TITLE} = ? AND ${CalendarContract.Events.DELETED} = 0"
-        contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), sel, arrayOf(calId.toString(), sMs.toString(), eMs.toString(), "Loma"), null)?.use {
-            return it.count > 0
-        }
-        return false
     }
 
     private fun insertEvent(calId: Long, title: String, loc: String, desc: String, sMs: Long, eMs: Long, allDay: Boolean) {
