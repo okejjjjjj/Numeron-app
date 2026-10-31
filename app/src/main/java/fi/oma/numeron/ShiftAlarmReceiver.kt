@@ -35,14 +35,25 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             nm.createNotificationChannel(channel)
         }
 
-        val clickIntent = Intent(context, MainActivity::class.java).apply {
+        val baseReq = (System.currentTimeMillis() / 1000L).toInt()
+
+        // 1. Pelkkä ilmoituksen napautus avaa sovelluksen ilman välitöntä leimausta
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openPi = PendingIntent.getActivity(
+            context, baseReq, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // 2. Vihreän napin painallus käynnistää automaattileimauksen
+        val stampIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("AUTO_STAMP", true)
             putExtra("IS_ENDING", isEnding)
         }
-        val reqCode = (System.currentTimeMillis() / 1000L).toInt()
-        val pi = PendingIntent.getActivity(
-            context, reqCode, clickIntent,
+        val stampPi = PendingIntent.getActivity(
+            context, baseReq + 1, stampIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -50,7 +61,7 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             setTextViewText(R.id.notif_title, titleText)
             setTextViewText(R.id.notif_text, shiftTitle)
             setTextViewText(R.id.notif_btn, btnText)
-            setOnClickPendingIntent(R.id.notif_btn, pi)
+            setOnClickPendingIntent(R.id.notif_btn, stampPi)
         }
 
         val notification = NotificationCompat.Builder(context, channelId)
@@ -60,7 +71,7 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setAutoCancel(true)
             .setTimeoutAfter(60 * 60 * 1000L)
-            .setContentIntent(pi)
+            .setContentIntent(openPi)
             .build()
 
         nm.notify(if (isEnding) 2002 else 1001, notification)
