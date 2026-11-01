@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -33,6 +35,7 @@ import java.time.temporal.ChronoUnit
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var mainColumn: LinearLayout
     private lateinit var webView: WebView
     private lateinit var btnStamp: Button
     private lateinit var btnWishes: Button
@@ -65,7 +68,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#121212"))
         }
 
-        val mainColumn = LinearLayout(this).apply {
+        mainColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(-1, -1)
         }
@@ -170,12 +173,11 @@ class MainActivity : AppCompatActivity() {
         mainColumn.addView(webView)
         mainColumn.addView(buttonBar)
 
-        // Hillitty ja tyylikäs overlay automaattileimaukselle
         stampOverlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            setBackgroundColor(Color.parseColor("#D9121212"))
+            setBackgroundColor(Color.parseColor("#EB0A0A0A"))
             isClickable = true
             isFocusable = true
             visibility = View.GONE
@@ -184,16 +186,16 @@ class MainActivity : AppCompatActivity() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(64, 56, 64, 48)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = 48
-                marginEnd = 48
+            setPadding(56, 56, 56, 48)
+            layoutParams = LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = 64
+                marginEnd = 64
             }
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 32f
-                setColor(Color.parseColor("#222222"))
-                setStroke(2, Color.parseColor("#3A3A3A"))
+                cornerRadius = 36f
+                setColor(Color.parseColor("#1E1E1E"))
+                setStroke(2, Color.parseColor("#383838"))
             }
         }
 
@@ -270,7 +272,8 @@ class MainActivity : AppCompatActivity() {
 
         webView.loadUrl(URL_STAMPING)
     }
-
+// --- OSA 1 LOPPUU ---
+// --- OSA 2 ALKAA ---
     override fun onResume() {
         super.onResume()
         if (::webView.isInitialized) {
@@ -283,11 +286,17 @@ class MainActivity : AppCompatActivity() {
         overlayTitle.text = title
         overlayStatus.text = status
         overlayProgress.visibility = if (showSpinner) View.VISIBLE else View.GONE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && ::mainColumn.isInitialized) {
+            mainColumn.setRenderEffect(RenderEffect.createBlurEffect(28f, 28f, Shader.TileMode.CLAMP))
+        }
         stampOverlay.visibility = View.VISIBLE
     }
 
     private fun hideStampOverlay() {
         if (!::stampOverlay.isInitialized) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && ::mainColumn.isInitialized) {
+            mainColumn.setRenderEffect(null)
+        }
         stampOverlay.visibility = View.GONE
     }
 
@@ -317,8 +326,7 @@ class MainActivity : AppCompatActivity() {
         styleButton(btnSync, "#2E7D32", true)
         styleButton(btnClose, "#6A2320", false)
     }
-// --- OSA 1 LOPPUU ---
-// --- OSA 2A ALKAA ---
+
     private fun showCredentialsDialog() {
         val prefs = getSharedPreferences("numeron_prefs", MODE_PRIVATE)
         val layout = LinearLayout(this).apply {
@@ -578,8 +586,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-// --- OSA 2A LOPPUU ---
-// --- OSA 2B ALKAA ---
+// --- OSA 2 LOPPUU ---
+// --- OSA 3 ALKAA ---
     private fun verifyStampSuccess(attempt: Int) {
         if (!pendingAutoStamp) return
         val targetKeyword = if (pendingStampIsEnding) "ulos" else "sisään"
