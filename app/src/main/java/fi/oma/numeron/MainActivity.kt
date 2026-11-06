@@ -81,7 +81,6 @@ class MainActivity : AppCompatActivity() {
             onSuccess()
             return
         }
-    private fun checkAndRequestAllPermissions() {
 
     
         val executor = ContextCompat.getMainExecutor(this)
