@@ -82,23 +82,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
     private fun checkAndRequestAllPermissions() {
-        val neededPermissions = mutableListOf(
-            Manifest.permission.READ_CALENDAR,
-            Manifest.permission.WRITE_CALENDAR
-        )
-        // Android 13+ (API 33) vaatii erillisen luvan ilmoituksille
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            neededPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
 
-        val missing = neededPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missing.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 105)
-        }
-    }
     
         val executor = ContextCompat.getMainExecutor(this)
         val biometricPrompt = BiometricPrompt(this, executor,
