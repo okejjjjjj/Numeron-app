@@ -1,3 +1,5 @@
+<img width="1080" height="2392" alt="9652" src="https://github.com/user-attachments/assets/4c9c827d-6053-4240-aeea-1ba6f3194ece" />
+<img width="1080" height="2392" alt="9651" src="https://github.com/user-attachments/assets/e512a8dd-0e6a-4037-98d9-995977097590" />
 # Numeron-vuorovahti
 
 Moderni ja kevyt Android-sovellus Numeron WFM -työaikaseurantaan. Numeron-vuorovahti automatisoi työaikaleimaukset, synkronoi työvuorot ja lomat saumattomasti Google Kalenteriin sekä tekee vuorojen hallinnasta vaivatonta.
