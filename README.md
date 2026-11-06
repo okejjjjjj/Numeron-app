@@ -1,29 +1,37 @@
-Kevyt ja moderni Android-sovellus Siun soten Numeron WFM -työaikaseurantaan. Sovellus nopeuttaa leimauksia, synkronoi työvuorot ja lomat suoraan Google Kalenteriin sekä muistuttaa tulevista vuoroista huomaamattomilla ilmoituksilla.
+# NumeronSync
 
+Moderni ja kevyt Android-sovellus Numeron WFM -työaikaseurantaan. NumeronSync automatisoi työaikaleimaukset, synkronoi työvuorot ja lomat saumattomasti Google Kalenteriin sekä tekee vuorojen hallinnasta vaivatonta.
 
+## Tärkeimmät ominaisuudet
 
-Tärkeimmät Ominaisuudet
+* **Dynaaminen organisaatiotuki:** Toimii millä tahansa Numeron WFM -alustalla. Voit syöttää oman organisaatiosi osoitteen tai tunnuksen helposti asetuksista.
+* **Automaattinen kalenterisynkronointi:** Hakee tulevat työvuorot ja vuosilomat (mukaan lukien pitkät lomasemmat ja viikonloppusillat) suoraan puhelimen Google Kalenteriin.
+* **Älykkäät muistutukset ja pikaleimaus:** Ilmoittaa 30 minuuttia ennen vuoron alkua ja loppua. Ilmoituksessa on suora *Leimaa sisään / ulos* -painike, joka hoitaa leimauksen yhdellä napautuksella ilmoitusta suurentamatta.
+* **Sormenjälkitunnistus:** Suojaa työvuorotoiveiden tallennuksen ja poiston biometrisellä tunnistuksella tai laitteen lukituskoodilla.
+* **Taustaseuranta:** Tarkistaa säännöllisesti uudet julkaistut työvuorolistat ja päivittää kalenterin automaattisesti taustalla.
+* **Salattu tallennus:** Käyttäjätunnukset ja salasanat tallennetaan laitteistotasolla salattuun muistiin (`EncryptedSharedPreferences`).
 
-Automaattinen kalenterisynkronointi: Hakee tulevat työvuorot ja vuosilomat (mukaan lukien monen päivän jaksot) suoraan puhelimen Google Kalenteriin.
+## Teknologiat
 
-Älykkäät muistutukset ja pikaleimaus: Ilmoittaa 30 minuuttia ennen vuoron alkua ja loppua. Ilmoituksessa on suora Leimaa sisään / ulos -painike, joka hoitaa leimauksen yhdellä napautuksella ilmoitusta suurentamatta.
+* **Kieli:** Kotlin
+* **Käyttöliittymä:** Material Design 3 (Slate Dark -teema, mukautettu sumennusefekti)
+* **Tietoturva & Biometria:** AndroidX Security Crypto & Biometric Prompt
 
-Sormenjälkitunnistus: Suojaa työvuorotoiveiden tallennuksen ja poiston biometrisellä tunnistuksella.
+## Asetukset
 
-Viikoittainen taustaseuranta: Tarkistaa säännöllisesti uudet julkaistut työvuorolistat ja päivittää kalenterin automaattisesti.
+Ensimmäisellä käynnistyskerralla sovellus pyytää määrittämään:
+1. **Organisaation osoitteen** (esim. `omaorganisaatio.numeronwfm.com`)
+2. **Käyttäjätunnuksen ja salasanan**
+3. **Biometrisen tunnistuksen** valinnan
+4. **Automaattisen synkronoinnin** asetukset
+5. **Kohdekalenterin** (voit valita haluamasi puhelimen kalenterin pudotusvalikosta)
+6. **Leimausmuistutukset**
 
+## Asennus kehittäjille
 
-
-Käyttöohjeet
-
-Kirjautumistunnukset: Voit tallentaa tai päivittää tunnuksesi pitämällä alarivin Leimaus-nappia pohjassa.
-
-Kalenterin vienti: Siirry sovelluksen Vuorot-välilehdelle ja napauta Vie kalenteriin -painiketta.
-
-
-
-Teknologiat
-
-Kieli: Kotlin
-Käyttöliittymä & Logiikka: Native Android (WebView, Material Design, Biometric Prompt, AlarmManager)
-Tietoturva: EncryptedSharedPreferences (AES-256-salaus)
+1. Kloonaa repositorio.
+2. Avaa projekti **Android Studiossa**.
+3. Varmista, että `app/build.gradle`-tiedostosta löytyvät vaadittavat riippuvuudet:
+   ```groovy
+   implementation "androidx.biometric:biometric:1.1.0"
+   implementation "androidx.security:security-crypto:1.1.0-alpha06"
