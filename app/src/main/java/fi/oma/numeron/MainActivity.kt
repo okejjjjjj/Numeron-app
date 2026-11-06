@@ -338,8 +338,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
-checkAndRequestAllPermissions()
+
         if (SettingsManager.isFirstRun(this) && !pendingAutoStamp && !isBackgroundListSync) {
+            checkAndRequestAllPermissions()
             openSettings()
         }
 
