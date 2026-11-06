@@ -1,12 +1,12 @@
 # Numeron-vuorovahti
 
-Moderni ja kevyt Android-sovellus Numeron WFM -työaikaseurantaan. NumeronSync automatisoi työaikaleimaukset, synkronoi työvuorot ja lomat saumattomasti Google Kalenteriin sekä tekee vuorojen hallinnasta vaivatonta.
+Moderni ja kevyt Android-sovellus Numeron WFM -työaikaseurantaan. Numeron-vuorovahti automatisoi työaikaleimaukset, synkronoi työvuorot ja lomat saumattomasti Google Kalenteriin sekä tekee vuorojen hallinnasta vaivatonta.
 
 ## Tärkeimmät ominaisuudet
 
 * **Dynaaminen organisaatiotuki:** Toimii millä tahansa Numeron WFM -alustalla. Voit syöttää oman organisaatiosi osoitteen tai tunnuksen helposti asetuksista.
-* **Automaattinen kalenterisynkronointi:** Hakee tulevat työvuorot ja vuosilomat (mukaan lukien pitkät lomasemmat ja viikonloppusillat) suoraan puhelimen Google Kalenteriin.
-* **Älykkäät muistutukset ja pikaleimaus:** Ilmoittaa 30 minuuttia ennen vuoron alkua ja loppua. Ilmoituksessa on suora *Leimaa sisään / ulos* -painike, joka hoitaa leimauksen yhdellä napautuksella ilmoitusta suurentamatta.
+* **Automaattinen kalenterisynkronointi:** Hakee tulevat työvuorot ja vuosilomat suoraan puhelimen Google Kalenteriin.
+* **Älykkäät muistutukset ja pikaleimaus:** Ilmoittaa 30 minuuttia ennen vuoron alkua ja loppua. Ilmoituksessa on suora Leimaa sisään / ulos -painike, joka hoitaa leimauksen yhdellä napautuksella ilmoitusta suurentamatta.
 * **Sormenjälkitunnistus:** Suojaa työvuorotoiveiden tallennuksen ja poiston biometrisellä tunnistuksella tai laitteen lukituskoodilla.
 * **Taustaseuranta:** Tarkistaa säännöllisesti uudet julkaistut työvuorolistat ja päivittää kalenterin automaattisesti taustalla.
 * **Salattu tallennus:** Käyttäjätunnukset ja salasanat tallennetaan laitteistotasolla salattuun muistiin (`EncryptedSharedPreferences`).
