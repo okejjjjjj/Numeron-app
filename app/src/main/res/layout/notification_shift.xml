@@ -20,7 +20,7 @@
             android:id="@+id/notif_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Vuoro alkaa 30 min kuluttua"
+            android:text="Vuoro alkaa klo 07:00"
             android:textStyle="bold"
             android:textSize="14sp"
             android:textColor="#FFFFFF"

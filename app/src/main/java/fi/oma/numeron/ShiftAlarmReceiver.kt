@@ -12,6 +12,35 @@ import androidx.core.app.NotificationCompat
 
 class ShiftAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val actionType = intent.getStringExtra("ACTION_TYPE") ?: "STAMP"
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        if (actionType == "CHECK_NEW_LIST") {
+            val checkIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("AUTO_SYNC_NEW_LIST", true)
+            }
+            val pi = PendingIntent.getActivity(
+                context, 9991, checkIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel("numeron_list_channel", "Uudet työvuorolistat", NotificationManager.IMPORTANCE_HIGH)
+                )
+            }
+            val notif = NotificationCompat.Builder(context, "numeron_list_channel")
+                .setSmallIcon(R.drawable.ic_launcher)
+                .setContentTitle("Uusi työvuorolista saatavilla!")
+                .setContentText("Napauta tästä, niin uudet vuorot haetaan suoraan kalenteriin.")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .build()
+            nm.notify(3003, notif)
+            return
+        }
+
         val shiftTitle = intent.getStringExtra("SHIFT_TITLE") ?: "Työvuoro"
         val shiftTime = intent.getStringExtra("SHIFT_TIME") ?: ""
         val isEnding = intent.getBooleanExtra("IS_ENDING", false)
@@ -24,8 +53,6 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
         val btnText = if (isEnding) "LEIMAA ULOS" else "LEIMAA SISÄÄN"
 
         val channelId = "numeron_shift_channel"
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(channelId, "Työvuoromuistutukset", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Hiljaiset leimausmuistutukset"
@@ -35,25 +62,14 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             nm.createNotificationChannel(channel)
         }
 
-        val baseReq = (System.currentTimeMillis() / 1000L).toInt()
-
-        // 1. Pelkkä ilmoituksen napautus avaa sovelluksen ilman välitöntä leimausta
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        val openPi = PendingIntent.getActivity(
-            context, baseReq, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        // 2. Vihreän napin painallus käynnistää automaattileimauksen
-        val stampIntent = Intent(context, MainActivity::class.java).apply {
+        val clickIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("AUTO_STAMP", true)
             putExtra("IS_ENDING", isEnding)
         }
-        val stampPi = PendingIntent.getActivity(
-            context, baseReq + 1, stampIntent,
+        val reqCode = (System.currentTimeMillis() / 1000L).toInt()
+        val pi = PendingIntent.getActivity(
+            context, reqCode, clickIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -61,7 +77,7 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             setTextViewText(R.id.notif_title, titleText)
             setTextViewText(R.id.notif_text, shiftTitle)
             setTextViewText(R.id.notif_btn, btnText)
-            setOnClickPendingIntent(R.id.notif_btn, stampPi)
+            setOnClickPendingIntent(R.id.notif_btn, pi)
         }
 
         val notification = NotificationCompat.Builder(context, channelId)
@@ -71,7 +87,7 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setAutoCancel(true)
             .setTimeoutAfter(60 * 60 * 1000L)
-            .setContentIntent(openPi)
+            .setContentIntent(pi)
             .build()
 
         nm.notify(if (isEnding) 2002 else 1001, notification)
