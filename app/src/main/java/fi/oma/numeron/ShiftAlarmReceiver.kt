@@ -1,4 +1,3 @@
-
 package fi.oma.numeron
 
 import android.app.NotificationChannel
@@ -17,6 +16,8 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         if (actionType == "CHECK_NEW_LIST") {
+            if (!SettingsManager.isAutoSyncEnabled(context)) return
+
             val checkIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("AUTO_SYNC_NEW_LIST", true)
@@ -41,6 +42,9 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             nm.notify(3003, notif)
             return
         }
+
+        // Tarkistetaan, onko leimausnotifikaatiot kytketty päälle asetuksista
+        if (!SettingsManager.isStampNotificationEnabled(context)) return
 
         val shiftTitle = intent.getStringExtra("SHIFT_TITLE") ?: "Työvuoro"
         val shiftTime = intent.getStringExtra("SHIFT_TIME") ?: ""
