@@ -6,25 +6,38 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 object SettingsManager {
+    @Volatile
+    private var cachedPrefs: SharedPreferences? = null
+
     private fun getPrefs(context: Context): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                context,
-                "numeron_secure_prefs",
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-        } catch (e: Exception) {
-            context.getSharedPreferences("numeron_prefs", Context.MODE_PRIVATE)
+        cachedPrefs?.let { return it }
+        synchronized(this) {
+            cachedPrefs?.let { return it }
+            val appCtx = context.applicationContext
+            val prefs = try {
+                val masterKey = MasterKey.Builder(appCtx)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    appCtx,
+                    "numeron_secure_prefs",
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+            } catch (e: Exception) {
+                appCtx.getSharedPreferences("numeron_prefs", Context.MODE_PRIVATE)
+            }
+            cachedPrefs = prefs
+            return prefs
         }
     }
 
+    fun hasValidOrganization(context: Context): Boolean =
+        getOrganizationRaw(context).trim().isNotEmpty()
+
     fun isFirstRun(context: Context): Boolean =
-        !getPrefs(context).contains("settings_initialized") || getOrganizationRaw(context).isEmpty()
+        !getPrefs(context).contains("settings_initialized") || !hasValidOrganization(context)
 
     fun getOrganizationRaw(context: Context): String =
         getPrefs(context).getString("org_domain", "") ?: ""
@@ -34,7 +47,7 @@ object SettingsManager {
             .removePrefix("https://")
             .removePrefix("http://")
             .trimEnd('/')
-        if (raw.isEmpty()) return "about:blank"
+        if (raw.isEmpty()) return ""
         return if (raw.contains(".")) "https://$raw" else "https://$raw.numeronwfm.com"
     }
 
