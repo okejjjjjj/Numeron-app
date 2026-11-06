@@ -1,4 +1,4 @@
-Kevyt ja moderni Android-sovellus Siun soten Numeron WFM -työaikaseurantaan. Sovellus automatisoi leimaukset, synkronoi työvuorot ja lomat suoraan Google Kalenteriin sekä muistuttaa tulevista vuoroista huomaamattomilla ilmoituksilla.
+Kevyt ja moderni Android-sovellus Siun soten Numeron WFM -työaikaseurantaan. Sovellus nopeuttaa leimauksia, synkronoi työvuorot ja lomat suoraan Google Kalenteriin sekä muistuttaa tulevista vuoroista huomaamattomilla ilmoituksilla.
 
 
 
@@ -17,6 +17,7 @@ Viikoittainen taustaseuranta: Tarkistaa säännöllisesti uudet julkaistut työv
 Käyttöohjeet
 
 Kirjautumistunnukset: Voit tallentaa tai päivittää tunnuksesi pitämällä alarivin Leimaus-nappia pohjassa.
+
 Kalenterin vienti: Siirry sovelluksen Vuorot-välilehdelle ja napauta Vie kalenteriin -painiketta.
 
 
