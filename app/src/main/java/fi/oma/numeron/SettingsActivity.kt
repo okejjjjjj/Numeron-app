@@ -2,6 +2,7 @@ package fi.oma.numeron
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -22,45 +23,48 @@ class SettingsActivity : AppCompatActivity() {
     private val calendarList = mutableListOf<CalendarItem>()
     private lateinit var calendarSpinner: Spinner
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val rootScroll = ScrollView(this).apply {
             layoutParams = ViewGroup.LayoutParams(-1, -1)
-            setBackgroundColor(Color.parseColor("#0F172A"))
+            setBackgroundColor(Color.parseColor("#0B1120"))
+            isFillViewport = true
         }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 48, 40, 64)
-        }
-
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(8, 0, 8, 32)
+            setPadding(dp(20), dp(24), dp(20), dp(36))
         }
 
         val titleView = TextView(this).apply {
             text = "Asetukset"
-            textSize = 22f
+            textSize = 24f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            setTextColor(Color.parseColor("#F8FAFC"))
+            setPadding(dp(4), 0, dp(4), dp(4))
         }
-        headerRow.addView(titleView)
-        container.addView(headerRow)
+        val subHeaderView = TextView(this).apply {
+            text = "Numeron WFM -automaation ja kalenterin hallinta"
+            textSize = 13f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(dp(4), 0, dp(4), dp(20))
+        }
+        container.addView(titleView)
+        container.addView(subHeaderView)
 
         fun createCard(sectionTitle: String, subtitle: String): LinearLayout {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(40, 36, 40, 36)
-                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 28 }
+                setPadding(dp(20), dp(18), dp(20), dp(18))
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) }
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 28f
+                    cornerRadius = dp(18).toFloat()
                     setColor(Color.parseColor("#1E293B"))
-                    setStroke(2, Color.parseColor("#334155"))
+                    setStroke(dp(1), Color.parseColor("#334155"))
                 }
             }
             card.addView(TextView(this).apply {
@@ -74,7 +78,7 @@ class SettingsActivity : AppCompatActivity() {
                     text = subtitle
                     textSize = 12.5f
                     setTextColor(Color.parseColor("#94A3B8"))
-                    setPadding(0, 6, 0, 20)
+                    setPadding(0, dp(4), 0, dp(12))
                 })
             }
             container.addView(card)
@@ -82,26 +86,39 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         fun styleEdit(edit: EditText) {
-            edit.setTextColor(Color.WHITE)
+            edit.setTextColor(Color.parseColor("#F8FAFC"))
             edit.setHintTextColor(Color.parseColor("#64748B"))
             edit.textSize = 14.5f
-            edit.setPadding(32, 26, 32, 26)
+            edit.setPadding(dp(16), dp(13), dp(16), dp(13))
             edit.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 18f
+                cornerRadius = dp(12).toFloat()
                 setColor(Color.parseColor("#0F172A"))
-                setStroke(2, Color.parseColor("#334155"))
+                setStroke(dp(1), Color.parseColor("#334155"))
             }
-            edit.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
+            edit.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }
+        }
+
+        fun createStyledSwitch(label: String, checked: Boolean): Switch {
+            return Switch(this).apply {
+                text = label
+                textSize = 14.5f
+                setTextColor(Color.parseColor("#F1F5F9"))
+                isChecked = checked
+                setPadding(0, dp(4), 0, dp(4))
+                val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf(-android.R.attr.state_checked))
+                thumbTintList = ColorStateList(states, intArrayOf(Color.parseColor("#10B981"), Color.parseColor("#94A3B8")))
+                trackTintList = ColorStateList(states, intArrayOf(Color.parseColor("#065F46"), Color.parseColor("#334155")))
+            }
         }
 
         // 1. Organisaatio & Tunnukset
         val cardOrg = createCard(
             "1. Organisaatio ja kirjautuminen",
-            "Syötä organisaation tunnus (esim. siunsote) tai koko osoite, sekä kirjautumistiedot."
+            "Syötä organisaation tunnus (esim. omaorganisaatio) tai palvelimen osoite, sekä kirjautumistiedot."
         )
         val orgEdit = EditText(this).apply {
-            hint = "Organisaatio (esim. siunsote)"
+            hint = "Organisaatio tai osoite (esim. omaorganisaatio.numeronwfm.com)"
             setText(SettingsManager.getOrganizationRaw(this@SettingsActivity))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             styleEdit(this)
@@ -127,12 +144,10 @@ class SettingsActivity : AppCompatActivity() {
             "2. Sormenjälkitunnistus",
             "Vahvista työvuorotoiveiden tallennus ja poisto sormenjäljellä tai lukituskoodilla."
         )
-        val bioSwitch = Switch(this).apply {
-            text = "Käytä biometristä tunnistusta"
-            textSize = 14.5f
-            setTextColor(Color.WHITE)
-            isChecked = SettingsManager.isBiometricEnabled(this@SettingsActivity)
-        }
+        val bioSwitch = createStyledSwitch(
+            "Käytä biometristä tunnistusta",
+            SettingsManager.isBiometricEnabled(this)
+        )
         cardBio.addView(bioSwitch)
 
         // 3. Automaattinen vuorojen synkronointi
@@ -140,12 +155,10 @@ class SettingsActivity : AppCompatActivity() {
             "3. Työvuorojen automaattinen haku",
             "Tarkistaa uudet 3 viikon listat julkaisuperjantaisin klo 11 jälkeen ja vie ne kalenteriin."
         )
-        val syncSwitch = Switch(this).apply {
-            text = "Synkronoi työvuorot automaattisesti"
-            textSize = 14.5f
-            setTextColor(Color.WHITE)
-            isChecked = SettingsManager.isAutoSyncEnabled(this@SettingsActivity)
-        }
+        val syncSwitch = createStyledSwitch(
+            "Synkronoi työvuorot automaattisesti",
+            SettingsManager.isAutoSyncEnabled(this)
+        )
         cardSync.addView(syncSwitch)
 
         // 4. Kohdekalenteri
@@ -154,12 +167,12 @@ class SettingsActivity : AppCompatActivity() {
             "Valitse mihin puhelimen kalenteriin työvuorot ja vuosilomat tallennetaan."
         )
         calendarSpinner = Spinner(this).apply {
-            setPadding(24, 20, 24, 20)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 18f
+                cornerRadius = dp(12).toFloat()
                 setColor(Color.parseColor("#0F172A"))
-                setStroke(2, Color.parseColor("#334155"))
+                setStroke(dp(1), Color.parseColor("#334155"))
             }
         }
         cardCal.addView(calendarSpinner)
@@ -169,48 +182,55 @@ class SettingsActivity : AppCompatActivity() {
             "5. Leimausmuistutukset",
             "Näytä hiljainen ilmoitus ja pikaleimausnappi 30 min ennen vuoron alkua ja loppua."
         )
-        val notifSwitch = Switch(this).apply {
-            text = "Käytä leimausnotifikaatioita"
-            textSize = 14.5f
-            setTextColor(Color.WHITE)
-            isChecked = SettingsManager.isStampNotificationEnabled(this@SettingsActivity)
-        }
+        val notifSwitch = createStyledSwitch(
+            "Käytä leimausnotifikaatioita",
+            SettingsManager.isStampNotificationEnabled(this)
+        )
         cardNotif.addView(notifSwitch)
 
-        // Tallenna & Peruuta -napit
+        // Painikkeet
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 16 }
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
         }
 
         val btnCancel = Button(this).apply {
             text = "Peruuta"
             isAllCaps = false
+            textSize = 14f
             setTextColor(Color.parseColor("#CBD5E1"))
             background = GradientDrawable().apply {
-                cornerRadius = 24f
+                cornerRadius = dp(14).toFloat()
                 setColor(Color.parseColor("#334155"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = 12 }
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(8) }
             setOnClickListener { finish() }
         }
 
         val btnSave = Button(this).apply {
             text = "Tallenna asetukset"
             isAllCaps = false
+            textSize = 14.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
-                cornerRadius = 24f
-                setColor(Color.parseColor("#0284C7"))
+                cornerRadius = dp(14).toFloat()
+                colors = intArrayOf(Color.parseColor("#0284C7"), Color.parseColor("#0369A1"))
+                orientation = GradientDrawable.Orientation.LEFT_RIGHT
             }
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1.5f).apply { marginStart = 12 }
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1.5f).apply { marginStart = dp(8) }
             setOnClickListener {
+                val orgText = orgEdit.text.toString().trim()
+                if (orgText.isEmpty()) {
+                    Toast.makeText(this@SettingsActivity, "Syötä ensin organisaation tunnus tai osoite.", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
                 val selectedIdx = calendarSpinner.selectedItemPosition
                 val calId = if (selectedIdx in calendarList.indices) calendarList[selectedIdx].id else -1L
                 SettingsManager.saveAll(
                     this@SettingsActivity,
-                    orgEdit.text.toString(),
+                    orgText,
                     userEdit.text.toString(),
                     passEdit.text.toString(),
                     bioSwitch.isChecked,
@@ -246,7 +266,7 @@ class SettingsActivity : AppCompatActivity() {
                 CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
                 CalendarContract.Calendars.ACCOUNT_NAME
             )
-            val sel = "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}"
+            val sel = "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >=${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}"
             try {
                 contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, sel, null, null)?.use { c ->
                     while (c.moveToNext()) {
@@ -266,15 +286,15 @@ class SettingsActivity : AppCompatActivity() {
         ) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 return (super.getView(position, convertView, parent) as TextView).apply {
-                    setTextColor(Color.WHITE)
+                    setTextColor(Color.parseColor("#F8FAFC"))
                     textSize = 14f
                 }
             }
             override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
                 return (super.getDropDownView(position, convertView, parent) as TextView).apply {
-                    setTextColor(Color.WHITE)
+                    setTextColor(Color.parseColor("#F8FAFC"))
                     setBackgroundColor(Color.parseColor("#1E293B"))
-                    setPadding(32, 28, 32, 28)
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
                 }
             }
         }
