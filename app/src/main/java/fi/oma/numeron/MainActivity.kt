@@ -8,7 +8,6 @@ import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -20,7 +19,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.CalendarContract
-import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.webkit.*
@@ -33,8 +31,6 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import org.json.JSONArray
 import java.time.*
 import java.time.format.DateTimeFormatter
@@ -48,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnWishes: Button
     private lateinit var btnCalendar: Button
     private lateinit var btnSync: Button
+    private lateinit var btnSettings: Button
     private lateinit var btnClose: Button
 
     private lateinit var stampOverlay: LinearLayout
@@ -66,29 +63,25 @@ class MainActivity : AppCompatActivity() {
     private var totalFoundInBatch = 0
     private var totalAddedInBatch = 0
     private var isBackgroundListSync = false
+    private var forceListOnNextCalendarLoad = false
+    private var lastKnownBaseUrl = ""
 
-    private val URL_STAMPING = "https://siunsote.numeronwfm.com/WorktimeStamping"
-    private val URL_WISHES = "https://siunsote.numeronwfm.com/PersonRequests/List"
-    private val URL_CALENDAR = "https://siunsote.numeronwfm.com/Calendar/Month"
-
-    private fun getSecurePrefs(): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(this)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                this,
-                "numeron_secure_prefs",
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-        } catch (e: Exception) {
-            getSharedPreferences("numeron_prefs", MODE_PRIVATE)
-        }
-    }
+    private val urlStamping get() = "${SettingsManager.getBaseUrl(this)}/WorktimeStamping"
+    private val urlWishes get() = "${SettingsManager.getBaseUrl(this)}/PersonRequests/List"
+    private val urlCalendar get() = "${SettingsManager.getBaseUrl(this)}/Calendar/Month"
 
     private fun requireBiometricAuth(title: String, onSuccess: () -> Unit) {
+        if (!SettingsManager.isBiometricEnabled(this)) {
+            onSuccess()
+            return
+        }
+        val bm = BiometricManager.from(this)
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        if (bm.canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
+            onSuccess()
+            return
+        }
+
         val executor = ContextCompat.getMainExecutor(this)
         val biometricPrompt = BiometricPrompt(this, executor,
             object : BiometricPrompt.AuthenticationCallback() {
@@ -105,10 +98,7 @@ class MainActivity : AppCompatActivity() {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle("Vahvista sormenjäljellä tai lukituskoodilla")
-            .setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                BiometricManager.Authenticators.DEVICE_CREDENTIAL
-            )
+            .setAllowedAuthenticators(authenticators)
             .build()
 
         biometricPrompt.authenticate(promptInfo)
@@ -117,20 +107,22 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lastKnownBaseUrl = SettingsManager.getBaseUrl(this)
 
         val rootFrame = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            setBackgroundColor(Color.parseColor("#121212"))
+            setBackgroundColor(Color.parseColor("#0F172A"))
         }
 
         mainColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(-1, -1)
+            setBackgroundColor(Color.parseColor("#0F172A"))
         }
 
         webView = WebView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
-            setBackgroundColor(Color.parseColor("#121212"))
+            setBackgroundColor(Color.parseColor("#0F172A"))
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -144,7 +136,7 @@ class MainActivity : AppCompatActivity() {
                     val msg = (message ?: "").lowercase()
                     if (msg.contains("istunto") || msg.contains("session") || msg.contains("vanhentu") || msg.contains("kirjaudu")) {
                         result?.confirm()
-                        view?.loadUrl(URL_STAMPING)
+                        view?.loadUrl(urlStamping)
                         return true
                     }
                     return super.onJsAlert(view, url, message, result)
@@ -154,7 +146,7 @@ class MainActivity : AppCompatActivity() {
                     val msg = (message ?: "").lowercase()
                     if (msg.contains("istunto") || msg.contains("session") || msg.contains("vanhentu") || msg.contains("kirjaudu")) {
                         result?.confirm()
-                        view?.loadUrl(URL_STAMPING)
+                        view?.loadUrl(urlStamping)
                         return true
                     }
                     return super.onJsConfirm(view, url, message, result)
@@ -174,11 +166,12 @@ class MainActivity : AppCompatActivity() {
 
                     if (pendingAutoStamp) {
                         scheduleAutoStampCheck(1000)
-                    } else if (isBackgroundListSync && currentUrl.contains("/Calendar/", ignoreCase = true) && !waitingForListViewSync) {
-                        webView.postDelayed({ extractShiftsFromPage(forceList = true) }, 700)
+                    } else if (forceListOnNextCalendarLoad && currentUrl.contains("/Calendar/", ignoreCase = true) && !currentUrl.contains("login", ignoreCase = true)) {
+                        forceListOnNextCalendarLoad = false
+                        webView.postDelayed({ extractShiftsFromPage(forceList = true) }, 750)
                     } else if (waitingForListViewSync && currentUrl.contains("/Calendar/", ignoreCase = true)) {
                         waitingForListViewSync = false
-                        webView.postDelayed({ extractShiftsFromPage(forceList = false) }, 700)
+                        webView.postDelayed({ extractShiftsFromPage(forceList = false) }, 750)
                     }
                 }
             }
@@ -190,21 +183,35 @@ class MainActivity : AppCompatActivity() {
             setAcceptThirdPartyCookies(webView, true)
         }
 
+        // Kaunis kelluva pill-alarivi
+        val navWrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 12, 20, 20)
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+
         val buttonBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(10, 14, 10, 14)
-            setBackgroundColor(Color.parseColor("#1A1A1A"))
+            setPadding(12, 12, 12, 12)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 36f
+                setColor(Color.parseColor("#1E293B"))
+                setStroke(2, Color.parseColor("#334155"))
+            }
         }
 
-        fun createNavButton(label: String, action: () -> Unit): Button {
+        fun createNavButton(label: String, weight: Float = 1f, action: () -> Unit): Button {
             return Button(this).apply {
                 text = label
                 textSize = 11.5f
                 setTextColor(Color.WHITE)
                 isAllCaps = false
-                setPadding(4, 6, 4, 6)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setPadding(6, 8, 6, 8)
+                minHeight = 0
+                minimumHeight = 0
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight).apply {
                     marginStart = 5
                     marginEnd = 5
                 }
@@ -212,33 +219,33 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        btnStamp = createNavButton("Leimaus") { webView.loadUrl(URL_STAMPING) }.apply {
-            setOnLongClickListener {
-                showCredentialsDialog()
-                true
-            }
+        btnStamp = createNavButton("Leimaus") { webView.loadUrl(urlStamping) }.apply {
+            setOnLongClickListener { openSettings(); true }
         }
-        btnWishes = createNavButton("Toiveet") { webView.loadUrl(URL_WISHES) }
-        btnCalendar = createNavButton("Vuorot") { webView.loadUrl(URL_CALENDAR) }
-        btnSync = createNavButton("Vie kalenteriin") { checkPermissionsAndSync() }.apply {
+        btnWishes = createNavButton("Toiveet") { webView.loadUrl(urlWishes) }
+        btnCalendar = createNavButton("Vuorot") { webView.loadUrl(urlCalendar) }
+        btnSync = createNavButton("Synkronoi") { checkPermissionsAndSync() }.apply {
             visibility = View.GONE
         }
-        btnClose = createNavButton("Sulje") { finishAndRemoveTask() }
+        btnSettings = createNavButton("⚙", 0.55f) { openSettings() }
+        btnClose = createNavButton("✕", 0.55f) { finishAndRemoveTask() }
 
         buttonBar.addView(btnStamp)
         buttonBar.addView(btnWishes)
         buttonBar.addView(btnCalendar)
         buttonBar.addView(btnSync)
+        buttonBar.addView(btnSettings)
         buttonBar.addView(btnClose)
+        navWrapper.addView(buttonBar)
 
         mainColumn.addView(webView)
-        mainColumn.addView(buttonBar)
+        mainColumn.addView(navWrapper)
 
         stampOverlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            setBackgroundColor(Color.parseColor("#EB0A0A0A"))
+            setBackgroundColor(Color.parseColor("#EB0A0F1D"))
             isClickable = true
             isFocusable = true
             visibility = View.GONE
@@ -255,18 +262,18 @@ class MainActivity : AppCompatActivity() {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 36f
-                setColor(Color.parseColor("#1E1E1E"))
-                setStroke(2, Color.parseColor("#383838"))
+                setColor(Color.parseColor("#1E293B"))
+                setStroke(2, Color.parseColor("#38BDF8"))
             }
         }
 
         overlayProgress = ProgressBar(this).apply {
-            indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#2E7D32"))
+            indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#10B981"))
             layoutParams = LinearLayout.LayoutParams(96, 96).apply { bottomMargin = 32 }
         }
 
         overlayTitle = TextView(this).apply {
-            text = "Automaattinen leimaus"
+            text = "Automaattinen toiminto"
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
@@ -276,7 +283,7 @@ class MainActivity : AppCompatActivity() {
         overlayStatus = TextView(this).apply {
             text = "Yhdistetään palveluun..."
             textSize = 13.5f
-            setTextColor(Color.parseColor("#BBBBBB"))
+            setTextColor(Color.parseColor("#CBD5E1"))
             gravity = Gravity.CENTER
             setPadding(0, 16, 0, 36)
         }
@@ -285,16 +292,17 @@ class MainActivity : AppCompatActivity() {
             text = "Peruuta"
             textSize = 12f
             isAllCaps = false
-            setTextColor(Color.parseColor("#CCCCCC"))
+            setTextColor(Color.parseColor("#E2E8F0"))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 18f
-                setColor(Color.parseColor("#333333"))
+                cornerRadius = 20f
+                setColor(Color.parseColor("#334155"))
             }
             setOnClickListener {
                 pendingAutoStamp = false
                 autoStampClickDone = false
                 isBackgroundListSync = false
+                forceListOnNextCalendarLoad = false
                 pagesRemainingToSync = 0
                 hideStampOverlay()
             }
@@ -311,7 +319,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(rootFrame)
 
         handleIncomingIntent(intent)
-        updateNavigationState(URL_STAMPING)
+        updateNavigationState(urlStamping)
         scheduleNextThreeWeekListCheck()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -329,22 +337,29 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        val prefs = getSecurePrefs()
-        if (!prefs.contains("asked_creds") && !pendingAutoStamp && !isBackgroundListSync) {
-            prefs.edit().putBoolean("asked_creds", true).apply()
-            showCredentialsDialog()
+        if (SettingsManager.isFirstRun(this) && !pendingAutoStamp && !isBackgroundListSync) {
+            openSettings()
         }
 
         if (!isBackgroundListSync) {
-            webView.loadUrl(URL_STAMPING)
+            webView.loadUrl(urlStamping)
         }
+    }
+
+    private fun openSettings() {
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
 
     override fun onResume() {
         super.onResume()
-        if (::webView.isInitialized) {
+        val currentBase = SettingsManager.getBaseUrl(this)
+        if (lastKnownBaseUrl.isNotEmpty() && lastKnownBaseUrl != currentBase) {
+            lastKnownBaseUrl = currentBase
+            webView.loadUrl(urlStamping)
+        } else if (::webView.isInitialized) {
             tryAutoLoginIfNeeded()
         }
+        scheduleNextThreeWeekListCheck()
     }
 
     private fun injectWishProtection() {
@@ -399,12 +414,12 @@ class MainActivity : AppCompatActivity() {
     private fun styleButton(btn: Button, bgColor: String, isSelected: Boolean) {
         btn.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 20f
+            cornerRadius = 24f
             setColor(Color.parseColor(bgColor))
-            if (isSelected) setStroke(4, Color.WHITE)
+            if (isSelected) setStroke(3, Color.parseColor("#7DD3FC"))
         }
         btn.setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
-        btn.alpha = if (isSelected) 1.0f else 0.85f
+        btn.alpha = if (isSelected) 1.0f else 0.88f
     }
 
     private fun updateNavigationState(url: String) {
@@ -416,56 +431,17 @@ class MainActivity : AppCompatActivity() {
         btnCalendar.visibility = if (isCal) View.GONE else View.VISIBLE
         btnSync.visibility = if (isCal) View.VISIBLE else View.GONE
 
-        styleButton(btnStamp, if (isStamp) "#0288D1" else "#2C2C2C", isStamp)
-        styleButton(btnWishes, if (isWishes) "#0288D1" else "#2C2C2C", isWishes)
-        styleButton(btnCalendar, "#2C2C2C", false)
-        styleButton(btnSync, "#2E7D32", true)
-        styleButton(btnClose, "#6A2320", false)
-    }
-
-    private fun showCredentialsDialog() {
-        val prefs = getSecurePrefs()
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(50, 30, 50, 10)
-        }
-        val userField = EditText(this).apply {
-            hint = "Käyttäjätunnus"
-            setText(prefs.getString("username", ""))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
-        }
-        val passField = EditText(this).apply {
-            hint = "Salasana"
-            setText(prefs.getString("password", ""))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        layout.addView(userField)
-        layout.addView(passField)
-
-        AlertDialog.Builder(this)
-            .setTitle("Automaattinen kirjautuminen")
-            .setMessage("Tallenna tunnukset laitteen salattuun muistiin (voit avata tämän myöhemmin pitämällä Leimaus-nappia pohjassa).")
-            .setView(layout)
-            .setPositiveButton("Tallenna") { _, _ ->
-                prefs.edit()
-                    .putString("username", userField.text.toString().trim())
-                    .putString("password", passField.text.toString())
-                    .apply()
-                Toast.makeText(this, "Tunnukset tallennettu", Toast.LENGTH_SHORT).show()
-                tryAutoLoginIfNeeded()
-            }
-            .setNeutralButton("Tyhjennä") { _, _ ->
-                prefs.edit().remove("username").remove("password").apply()
-                Toast.makeText(this, "Tunnukset poistettu", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Peruuta", null)
-            .show()
+        styleButton(btnStamp, if (isStamp) "#0284C7" else "#334155", isStamp)
+        styleButton(btnWishes, if (isWishes) "#0284C7" else "#334155", isWishes)
+        styleButton(btnCalendar, "#334155", false)
+        styleButton(btnSync, "#059669", true)
+        styleButton(btnSettings, "#334155", false)
+        styleButton(btnClose, "#7F1D1D", false)
     }
 
     private fun tryAutoLoginIfNeeded() {
-        val prefs = getSecurePrefs()
-        val u = prefs.getString("username", "") ?: ""
-        val p = prefs.getString("password", "") ?: ""
+        val u = SettingsManager.getUsername(this)
+        val p = SettingsManager.getPassword(this)
         val safeU = u.replace("\\", "\\\\").replace("'", "\\'")
         val safeP = p.replace("\\", "\\\\").replace("'", "\\'")
 
@@ -526,7 +502,7 @@ class MainActivity : AppCompatActivity() {
             val r = res ?: ""
             val now = System.currentTimeMillis()
             when {
-                r.contains("SESSION_EXPIRED_RELOAD") -> webView.loadUrl(if (isBackgroundListSync) URL_CALENDAR else URL_STAMPING)
+                r.contains("SESSION_EXPIRED_RELOAD") -> webView.loadUrl(if (isBackgroundListSync) urlCalendar else urlStamping)
                 r.contains("SESSION_EXPIRED_CLICKED") || r.contains("USER_STEP_SUBMITTED") -> {
                     if (pendingAutoStamp || isBackgroundListSync) showStampOverlay(overlayTitle.text.toString(), "Kirjaudutaan sisään...")
                     webView.postDelayed({ tryAutoLoginIfNeeded() }, 1400)
@@ -546,11 +522,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // --- OSA 3 ALKAA ---
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
-        if (pendingAutoStamp && ::webView.isInitialized) webView.loadUrl(URL_STAMPING)
+        if (pendingAutoStamp && ::webView.isInitialized) webView.loadUrl(urlStamping)
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -568,11 +545,12 @@ class MainActivity : AppCompatActivity() {
         if (intent?.getBooleanExtra("AUTO_SYNC_NEW_LIST", false) == true) {
             intent.removeExtra("AUTO_SYNC_NEW_LIST")
             isBackgroundListSync = true
+            forceListOnNextCalendarLoad = true
             pagesRemainingToSync = 3
             totalFoundInBatch = 0
             totalAddedInBatch = 0
             showStampOverlay("Haetaan uutta työvuorolistaa", "Avataan kalenteria...")
-            if (::webView.isInitialized) webView.loadUrl(URL_CALENDAR)
+            if (::webView.isInitialized) webView.loadUrl(urlCalendar)
         }
     }
 
@@ -634,7 +612,7 @@ class MainActivity : AppCompatActivity() {
                 r.contains("ALREADY_IN_TARGET_STATE") -> completeAutoStampSuccess("Leimaus on jo voimassa!")
                 else -> {
                     if (!currentUrl.contains("/WorktimeStamping", ignoreCase = true) && !currentUrl.contains("login", ignoreCase = true) && autoStampRetryCount % 3 == 0) {
-                        webView.loadUrl(URL_STAMPING)
+                        webView.loadUrl(urlStamping)
                     }
                     scheduleAutoStampCheck(1400)
                 }
@@ -715,7 +693,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-private fun extractShiftsFromPage(forceList: Boolean = true) {
+    private fun extractShiftsFromPage(forceList: Boolean = true) {
         val js = """
             (function() {
                 var bodyText = document.body ? document.body.innerText : "";
@@ -731,11 +709,6 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
                                 return "SWITCHED_TO_LIST";
                             }
                         }
-                    }
-                    var viewBtns = document.querySelectorAll('button, a, span, div');
-                    for (var b = 0; b < viewBtns.length; b++) {
-                        var bt = (viewBtns[b].innerText || "").trim().toLowerCase();
-                        if (bt === 'näkymä' || bt.indexOf('näkymä') === 0) { viewBtns[b].click(); break; }
                     }
                     var links = document.querySelectorAll('a, li, button, span, div');
                     for (var i = 0; i < links.length; i++) {
@@ -801,10 +774,10 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
         @JavascriptInterface
         fun processCalendarData(cellsJson: String, pageText: String, currentUrl: String) {
             runOnUiThread {
-                val calId = getPrimaryCalendarId()
+                val calId = getTargetOrPrimaryCalendarId()
                 if (calId == null) {
                     hideStampOverlay()
-                    Toast.makeText(this@MainActivity, "Google Kalenteria ei löytynyt.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Kalenteria ei löytynyt.", Toast.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
                 val (found, added) = parseAndInsertCalendar(cellsJson, pageText, currentUrl, calId)
@@ -879,8 +852,16 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
             .build()
         nm.notify(3004, notif)
     }
+
     private fun scheduleNextThreeWeekListCheck() {
         try {
+            val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+            val intent = Intent(this, ShiftAlarmReceiver::class.java).apply { putExtra("ACTION_TYPE", "CHECK_NEW_LIST") }
+            val pi = PendingIntent.getBroadcast(this, 9991, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            if (!SettingsManager.isAutoSyncEnabled(this)) {
+                alarmManager.cancel(pi)
+                return
+            }
             val anchorFriday = LocalDate.of(2026, 11, 6)
             val now = ZonedDateTime.now(ZoneId.systemDefault())
             var nextPublishDate = anchorFriday
@@ -888,9 +869,6 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
                 nextPublishDate = nextPublishDate.plusWeeks(3)
             }
             val triggerMillis = nextPublishDate.atTime(11, 5).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-            val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
-            val intent = Intent(this, ShiftAlarmReceiver::class.java).apply { putExtra("ACTION_TYPE", "CHECK_NEW_LIST") }
-            val pi = PendingIntent.getBroadcast(this, 9991, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerMillis, pi)
         } catch (e: Exception) { e.printStackTrace() }
     }
@@ -930,8 +908,7 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
         }
         return foundRanges
     }
-
-    private fun parseAndInsertCalendar(cellsJson: String, pageText: String, currentUrl: String, calId: Long): Pair<Int, Int> {
+private fun parseAndInsertCalendar(cellsJson: String, pageText: String, currentUrl: String, calId: Long): Pair<Int, Int> {
         val (targetMonth, targetYear) = resolveMonthAndYear(pageText, currentUrl)
         val fmt = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
         val listRes = parseListView(pageText, targetMonth, targetYear, calId, fmt)
@@ -1036,8 +1013,7 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
         }
         return Pair(0, 0)
     }
-
-    private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, String> {
+private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, String> {
         val lines = raw.lines().map { it.trim() }.filter {
             it.length > 2 && !it.equals("Uusi", true) && !it.equals("Lisää uusi", true) &&
             !it.equals("Valinnat", true) && !it.startsWith("Vk", true) &&
@@ -1053,6 +1029,7 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
     }
 
     private fun scheduleShiftAlarms(startMillis: Long, endMillis: Long, startStr: String, endStr: String, title: String) {
+        if (!SettingsManager.isStampNotificationEnabled(this)) return
         try {
             val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
             val now = System.currentTimeMillis()
@@ -1146,13 +1123,18 @@ private fun extractShiftsFromPage(forceList: Boolean = true) {
         } catch (e: Exception) { false }
     }
 
-    private fun getPrimaryCalendarId(): Long? {
+    private fun getTargetOrPrimaryCalendarId(): Long? {
         val proj = arrayOf(CalendarContract.Calendars._ID)
+        val preferredId = SettingsManager.getTargetCalendarId(this)
+        if (preferredId != -1L) {
+            contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, "${CalendarContract.Calendars._ID} = ?", arrayOf(preferredId.toString()), null)?.use {
+                if (it.moveToFirst()) return it.getLong(0)
+            }
+        }
         contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, "${CalendarContract.Calendars.IS_PRIMARY} = 1", null, null)?.use { if (it.moveToFirst()) return it.getLong(0) }
         contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}", null, null)?.use { if (it.moveToFirst()) return it.getLong(0) }
         return null
     }
-
     private fun findShiftOnSameDay(calId: Long, sMs: Long, eMs: Long, dayStartMs: Long, dayEndMs: Long): Long? {
         val exactSel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.DTEND} = ? AND ${CalendarContract.Events.DELETED} = 0"
         contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), exactSel, arrayOf(calId.toString(), sMs.toString(), eMs.toString()), null)?.use { if (it.moveToFirst()) return it.getLong(0) }
