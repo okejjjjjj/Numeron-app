@@ -1,4 +1,4 @@
-# Tietosuojakäytäntö / Privacy Policy – NumeronSync
+# Tietosuojakäytäntö / Privacy Policy – Numeron vuorovahti 
 
 **Viimeksi päivitetty / Last updated:** 6.11.2026
 
