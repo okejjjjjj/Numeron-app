@@ -42,14 +42,17 @@ object SettingsManager {
     fun getOrganizationRaw(context: Context): String =
         getPrefs(context).getString("org_domain", "") ?: ""
 
-    fun getBaseUrl(context: Context): String {
+        fun getBaseUrl(context: Context): String {
         val raw = getOrganizationRaw(context).trim().lowercase()
             .removePrefix("https://")
             .removePrefix("http://")
-            .trimEnd('/')
-        if (raw.isEmpty()) return ""
+            .substringBefore("/")
+            .substringBefore("?")
+            .trim()
+        if (raw.isEmpty()) return "about:blank"
         return if (raw.contains(".")) "https://$raw" else "https://$raw.numeronwfm.com"
-    }
+        }
+        
 
     fun getUsername(context: Context): String = getPrefs(context).getString("username", "") ?: ""
     fun getPassword(context: Context): String = getPrefs(context).getString("password", "") ?: ""
@@ -78,7 +81,13 @@ object SettingsManager {
     ) {
         getPrefs(context).edit().apply {
             putBoolean("settings_initialized", true)
-            putString("org_domain", org.trim())
+                        val cleanOrg = org.trim()
+                .removePrefix("https://")
+                .removePrefix("http://")
+                .substringBefore("/")
+                .substringBefore("?")
+                .trim()
+            putString("org_domain", cleanOrg)
             putString("username", user.trim())
             putString("password", pass)
             putBoolean("biometric_enabled", biometric)
