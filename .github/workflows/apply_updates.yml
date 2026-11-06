@@ -1,0 +1,30 @@
+name: Päivitä koodit ja rakenna APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hae koodit
+        uses: actions/checkout@v4
+
+      - name: Aja päivitysskriptit ja siivoa
+        run: |
+          python3 build_part1.py
+          python3 build_part2a.py
+          python3 build_part2b.py
+          rm -f build_part1.py build_part2a.py build_part2b.py numeron_update.zip
+
+      - name: Tallenna päivitetyt tiedostot suoraan GitHubiin
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet || git commit -m "Päivitetty kaikki Numeron-tiedostot automaattisesti"
+          git push
+          
