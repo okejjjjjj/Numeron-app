@@ -402,12 +402,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!isBackgroundListSync) {
-if (VuorovahtiHelper.isDemoMode(savedUsername, savedPassword)) {
+if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManager.getPassword(this))) {
     webView.loadUrl("file:///android_asset/demo_shifts.html")
 } else {
-    webView.loadUrl(savedServerUrl)
+    webView.loadUrl(SettingsManager.getBaseUrl(this))
 }
-
+    
         }
     }
 
