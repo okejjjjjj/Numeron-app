@@ -32,6 +32,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var calendarSpinner: Spinner
     private lateinit var nextReminderStatusText: TextView
     private lateinit var lastReminderStatusText: TextView
+    private lateinit var syncStatusText: TextView
     private var testWebView: WebView? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
