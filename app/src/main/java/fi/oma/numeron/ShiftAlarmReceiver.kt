@@ -12,6 +12,11 @@ import androidx.core.app.NotificationCompat
 
 class ShiftAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+    VuorovahtiHelper.ensureRemindersFromCalendar(context)
+    return
+        }
+        
         val actionType = intent.getStringExtra("ACTION_TYPE") ?: "STAMP"
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
