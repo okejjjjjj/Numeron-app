@@ -21,11 +21,11 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.CalendarContract
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.webkit.*
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -33,11 +33,10 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONArray
+import java.text.SimpleDateFormat
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
-import android.view.HapticFeedbackConstants
-import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
@@ -54,7 +53,6 @@ object VuorovahtiHelper {
         }
     }
 
-    // Käyttöesimerkki, kun luot ContentValues-olion CalendarContract.Events-tauluun:
     fun applyShiftColor(values: ContentValues, title: String, startHour: Int) {
         values.put(CalendarContract.Events.EVENT_COLOR, getShiftEventColor(title, startHour))
     }
@@ -88,30 +86,35 @@ object VuorovahtiHelper {
         return username?.trim().equals("demo", ignoreCase = true) &&
                password?.trim().equals("demo", ignoreCase = true)
     }
-        // Tarkistaa tulevat työvuorot suoraan kalenterista ja asettaa hälytykset äänettömästi
+
+    // 5. Tarkistaa tulevat työvuorot suoraan kalenterista ja asettaa hälytykset äänettömästi
     fun ensureRemindersFromCalendar(
         context: Context,
-        reminderMinutesBefore: Int = 15, // Kuinka monta minuuttia ennen vuoroa hälytetään
+        reminderMinutesBefore: Int = 30,
         shiftKeywords: List<String> = listOf("työvuoro", "aamuvuoro", "iltavuoro", "yövuoro", "vuoro")
     ) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) 
+        if (!SettingsManager.isStampNotificationEnabled(context)) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR)
             != PackageManager.PERMISSION_GRANTED) {
             return
         }
 
         val now = System.currentTimeMillis()
-        val twoWeeksAhead = now + 14L * 24 * 60 * 60 * 1000 // Katsoo 14 vrk eteenpäin
+        val twoWeeksAhead = now + 14L * 24 * 60 * 60 * 1000L
 
         val projection = arrayOf(
             CalendarContract.Events._ID,
             CalendarContract.Events.TITLE,
-            CalendarContract.Events.DTSTART
+            CalendarContract.Events.DESCRIPTION,
+            CalendarContract.Events.DTSTART,
+            CalendarContract.Events.DTEND
         )
 
-        val selection = "${CalendarContract.Events.DTSTART} > ? AND ${CalendarContract.Events.DTSTART} < ?"
+        val selection = "${CalendarContract.Events.DTEND} > ? AND ${CalendarContract.Events.DTSTART} < ? AND ${CalendarContract.Events.DELETED} = 0"
         val selectionArgs = arrayOf(now.toString(), twoWeeksAhead.toString())
 
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val timeFmt = DateTimeFormatter.ofPattern("HH:mm")
 
         context.contentResolver.query(
             CalendarContract.Events.CONTENT_URI,
@@ -121,51 +124,78 @@ object VuorovahtiHelper {
             "${CalendarContract.Events.DTSTART} ASC"
         )?.use { cursor ->
             val titleIdx = cursor.getColumnIndex(CalendarContract.Events.TITLE)
+            val descIdx = cursor.getColumnIndex(CalendarContract.Events.DESCRIPTION)
             val startIdx = cursor.getColumnIndex(CalendarContract.Events.DTSTART)
+            val endIdx = cursor.getColumnIndex(CalendarContract.Events.DTEND)
 
             while (cursor.moveToNext()) {
                 val title = cursor.getString(titleIdx) ?: continue
+                val desc = if (descIdx != -1) (cursor.getString(descIdx) ?: "") else ""
                 val startTime = cursor.getLong(startIdx)
+                val endTime = if (endIdx != -1) cursor.getLong(endIdx) else 0L
 
-                // Ohitetaan lomat, vapaat ja muut kalenterimerkinnät
                 val lowerTitle = title.lowercase(Locale.getDefault())
                 val isWorkShift = shiftKeywords.any { lowerTitle.contains(it) } &&
                                   !lowerTitle.contains("loma") &&
                                   !lowerTitle.contains("vapaa")
 
                 if (isWorkShift) {
-                    val triggerTime = startTime - (reminderMinutesBefore * 60 * 1000L)
-                    if (triggerTime > now) {
-                        val intent = Intent(context, ShiftAlarmReceiver::class.java).apply {
-                            putExtra("shift_title", title)
-                            putExtra("shift_start", startTime)
+                    val displayTitle = desc.ifEmpty { title }
+                    val startStr = Instant.ofEpochMilli(startTime).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFmt)
+
+                    // 1. Sisäänleimaushälytys (30 min ennen vuoron alkua)
+                    val startTrigger = startTime - (reminderMinutesBefore * 60 * 1000L)
+                    if (startTrigger > now) {
+                        val startIntent = Intent(context, ShiftAlarmReceiver::class.java).apply {
+                            putExtra("SHIFT_TITLE", displayTitle)
+                            putExtra("SHIFT_TIME", startStr)
+                            putExtra("IS_ENDING", false)
                         }
-                        // Uniikki ID vuoron alkamisajan perusteella estää tuplahälytykset
-                        val requestCode = (startTime / 60000L).toInt()
-                        val pendingIntent = PendingIntent.getBroadcast(
+                        val startPi = PendingIntent.getBroadcast(
                             context,
-                            requestCode,
-                            intent,
+                            (startTrigger / 60000L).toInt(),
+                            startIntent,
                             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                         )
+                        scheduleAlarmSafe(alarmManager, startTrigger, startPi)
+                    }
 
-                        try {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
-                                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                            } else {
-                                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                    // 2. Ulosleimaushälytys (30 min ennen vuoron loppua)
+                    if (endTime > startTime) {
+                        val endStr = Instant.ofEpochMilli(endTime).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFmt)
+                        val endTrigger = endTime - (reminderMinutesBefore * 60 * 1000L)
+                        if (endTrigger > now) {
+                            val endIntent = Intent(context, ShiftAlarmReceiver::class.java).apply {
+                                putExtra("SHIFT_TITLE", displayTitle)
+                                putExtra("SHIFT_TIME", endStr)
+                                putExtra("IS_ENDING", true)
                             }
-                        } catch (e: SecurityException) {
-                            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                            val endPi = PendingIntent.getBroadcast(
+                                context,
+                                (endTrigger / 60000L).toInt() + 1,
+                                endIntent,
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                            )
+                            scheduleAlarmSafe(alarmManager, endTrigger, endPi)
                         }
                     }
                 }
             }
         }
     }
-    
-}
 
+    private fun scheduleAlarmSafe(alarmManager: AlarmManager, triggerTime: Long, pendingIntent: PendingIntent) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            }
+        } catch (e: SecurityException) {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+        }
+    }
+}
 
 class MainActivity : AppCompatActivity() {
 
@@ -197,9 +227,17 @@ class MainActivity : AppCompatActivity() {
     private var forceListOnNextCalendarLoad = false
     private var lastKnownBaseUrl = ""
 
-    private val urlStamping get() = "${SettingsManager.getBaseUrl(this)}/WorktimeStamping"
-    private val urlWishes get() = "${SettingsManager.getBaseUrl(this)}/PersonRequests/List"
-    private val urlCalendar get() = "${SettingsManager.getBaseUrl(this)}/Calendar/Month"
+    private val isDemoActive: Boolean
+        get() = VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManager.getPassword(this))
+
+    private val urlStamping: String
+        get() = if (isDemoActive) "file:///android_asset/demo_shifts.html" else "${SettingsManager.getBaseUrl(this)}/WorktimeStamping"
+
+    private val urlWishes: String
+        get() = if (isDemoActive) "file:///android_asset/demo_shifts.html" else "${SettingsManager.getBaseUrl(this)}/PersonRequests/List"
+
+    private val urlCalendar: String
+        get() = if (isDemoActive) "file:///android_asset/demo_shifts.html" else "${SettingsManager.getBaseUrl(this)}/Calendar/Month"
 
     private fun requireBiometricAuth(title: String, onSuccess: () -> Unit) {
         if (!SettingsManager.isBiometricEnabled(this)) {
@@ -213,12 +251,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-    
         val executor = ContextCompat.getMainExecutor(this)
         val biometricPrompt = BiometricPrompt(this, executor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     super.onAuthenticationSucceeded(result)
+                    VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
                     onSuccess()
                 }
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -251,8 +289,9 @@ class MainActivity : AppCompatActivity() {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
             setBackgroundColor(Color.parseColor("#0F172A"))
         }
-// Asettaa tulevien kalenterivuorojen hälytykset äänettömästi taustalla
-VuorovahtiHelper.ensureRemindersFromCalendar(this)
+
+        // Asettaa tulevien kalenterivuorojen hälytykset äänettömästi taustalla
+        VuorovahtiHelper.ensureRemindersFromCalendar(this)
 
         webView = WebView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
@@ -292,7 +331,20 @@ VuorovahtiHelper.ensureRemindersFromCalendar(this)
                     CookieManager.getInstance().flush()
                     val currentUrl = url ?: ""
                     updateNavigationState(currentUrl)
-                    tryAutoLoginIfNeeded()
+                    if (!isDemoActive) {
+                        tryAutoLoginIfNeeded()
+                    }
+
+                    // Jos Numeron heittää kirjautumisen jälkeen etusivulle (ei leimaus-, kalenteri- tai toivesivulle), ohjaa suoraan leimaussivulle
+                    val base = SettingsManager.getBaseUrl(this@MainActivity).trimEnd('/')
+                    if (!isDemoActive && !isBackgroundListSync &&
+                        (currentUrl.trimEnd('/').equals(base, ignoreCase = true) ||
+                         currentUrl.contains("/Home", ignoreCase = true) ||
+                         currentUrl.contains("/Default", ignoreCase = true))
+                    ) {
+                        view?.loadUrl(urlStamping)
+                        return
+                    }
 
                     if (currentUrl.contains("/PersonRequests/", ignoreCase = true)) {
                         injectWishProtection()
@@ -300,7 +352,7 @@ VuorovahtiHelper.ensureRemindersFromCalendar(this)
 
                     if (pendingAutoStamp) {
                         scheduleAutoStampCheck(1000)
-                    } else if (forceListOnNextCalendarLoad && currentUrl.contains("/Calendar/", ignoreCase = true) && !currentUrl.contains("login", ignoreCase = true)) {
+                    } else if (forceListOnNextCalendarLoad && (currentUrl.contains("/Calendar/", ignoreCase = true) || currentUrl.contains("demo_shifts", ignoreCase = true)) && !currentUrl.contains("login", ignoreCase = true)) {
                         forceListOnNextCalendarLoad = false
                         webView.postDelayed({ extractShiftsFromPage(forceList = true) }, 750)
                     } else if (waitingForListViewSync && currentUrl.contains("/Calendar/", ignoreCase = true)) {
@@ -317,7 +369,6 @@ VuorovahtiHelper.ensureRemindersFromCalendar(this)
             setAcceptThirdPartyCookies(webView, true)
         }
 
-        // Kaunis kelluva pill-alarivi
         val navWrapper = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 12, 20, 20)
@@ -476,13 +527,9 @@ VuorovahtiHelper.ensureRemindersFromCalendar(this)
             openSettings()
         }
 
+        // Ladataan suoraan urlStamping (joka avaa leimaussivun tai demo-tilassa demo_shifts.html:n)
         if (!isBackgroundListSync) {
-if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManager.getPassword(this))) {
-    webView.loadUrl("file:///android_asset/demo_shifts.html")
-} else {
-    webView.loadUrl(SettingsManager.getBaseUrl(this))
-}
-    
+            webView.loadUrl(urlStamping)
         }
     }
 
@@ -492,11 +539,12 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
 
     override fun onResume() {
         super.onResume()
-        val currentBase = SettingsManager.getBaseUrl(this)
+        VuorovahtiHelper.ensureRemindersFromCalendar(this)
+        val currentBase = if (isDemoActive) "demo" else SettingsManager.getBaseUrl(this)
         if (lastKnownBaseUrl.isNotEmpty() && lastKnownBaseUrl != currentBase) {
             lastKnownBaseUrl = currentBase
             webView.loadUrl(urlStamping)
-        } else if (::webView.isInitialized) {
+        } else if (::webView.isInitialized && !isDemoActive) {
             tryAutoLoginIfNeeded()
         }
         scheduleNextThreeWeekListCheck()
@@ -564,11 +612,12 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
 
     private fun updateNavigationState(url: String) {
         val u = if (url.isNotEmpty()) url else (webView.url ?: "")
-        val isCal = u.contains("/Calendar/", ignoreCase = true)
+        val isDemo = u.contains("demo_shifts.html", ignoreCase = true)
+        val isCal = u.contains("/Calendar/", ignoreCase = true) || isDemo
         val isWishes = u.contains("/PersonRequests/", ignoreCase = true)
         val isStamp = u.contains("/WorktimeStamping", ignoreCase = true) || (!isCal && !isWishes)
 
-        btnCalendar.visibility = if (isCal) View.GONE else View.VISIBLE
+        btnCalendar.visibility = if (isCal && !isDemo) View.GONE else View.VISIBLE
         btnSync.visibility = if (isCal) View.VISIBLE else View.GONE
 
         styleButton(btnStamp, if (isStamp) "#0284C7" else "#334155", isStamp)
@@ -580,6 +629,7 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
     }
 
     private fun tryAutoLoginIfNeeded() {
+        if (isDemoActive) return
         val u = SettingsManager.getUsername(this)
         val p = SettingsManager.getPassword(this)
         val safeU = u.replace("\\", "\\\\").replace("'", "\\'")
@@ -662,7 +712,6 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
         }
     }
 
-    // --- OSA 3 ALKAA ---
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -671,6 +720,21 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
+        val quickAction = intent?.getStringExtra("quick_action")?.trim()
+        if (quickAction == "ACTION_STAMP") {
+            intent.removeExtra("quick_action")
+            if (::webView.isInitialized) webView.loadUrl(urlStamping)
+        } else if (quickAction == "ACTION_SYNC") {
+            intent.removeExtra("quick_action")
+            isBackgroundListSync = true
+            forceListOnNextCalendarLoad = true
+            pagesRemainingToSync = 3
+            totalFoundInBatch = 0
+            totalAddedInBatch = 0
+            showStampOverlay("Synkronoidaan työvuoroja", "Avataan kalenteria...")
+            if (::webView.isInitialized) webView.loadUrl(urlCalendar)
+        }
+
         if (intent?.getBooleanExtra("AUTO_STAMP", false) == true) {
             pendingAutoStamp = true
             pendingStampIsEnding = intent.getBooleanExtra("IS_ENDING", false)
@@ -776,7 +840,7 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
                     if (txt.indexOf('leimaa') !== -1 && txt.indexOf('$targetKeyword') !== -1) targetStillVisible = true;
                 }
                 var bodyTxt = (document.body ? document.body.innerText : "").toLowerCase();
-                if (bodyTxt.indexOf('onnistui') !== -1 || bodyTxt.indexOf('tallennettu') !== -1) return "VERIFIED_TEXT";
+                if (bodyTxt.indexOf('onnistui') !== -1 || bodyTxt.indexOf('tallennettu') !== -1 || bodyTxt.indexOf('leimattu sisään') !== -1) return "VERIFIED_TEXT";
                 if (!targetStillVisible && bodyTxt.indexOf('työaikaleimaus') !== -1) return "VERIFIED_GONE";
                 return "PENDING";
             })();
@@ -800,6 +864,7 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
     private fun completeAutoStampSuccess(message: String) {
         pendingAutoStamp = false
         autoStampClickDone = false
+        VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
         showStampOverlay(" ✓  $message", "Suljetaan sovellus...", showSpinner = false)
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         webView.postDelayed({ finishAndRemoveTask() }, 1400)
@@ -812,7 +877,7 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
         } else {
-            pagesRemainingToSync = 3
+            pagesRemainingToSync = if (isDemoActive) 0 else 3
             totalFoundInBatch = 0
             totalAddedInBatch = 0
             extractShiftsFromPage(forceList = true)
@@ -821,11 +886,12 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        VuorovahtiHelper.ensureRemindersFromCalendar(this)
         if (requestCode == 100) {
             val r = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
             val w = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
             if (r && w) {
-                pagesRemainingToSync = 3
+                pagesRemainingToSync = if (isDemoActive) 0 else 3
                 totalFoundInBatch = 0
                 totalAddedInBatch = 0
                 extractShiftsFromPage(forceList = true)
@@ -834,6 +900,25 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
     }
 
     private fun extractShiftsFromPage(forceList: Boolean = true) {
+        if (isDemoActive) {
+            val calId = getTargetOrPrimaryCalendarId()
+            if (calId != null) {
+                val fmt = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
+                val tomorrow = LocalDate.now().plusDays(1)
+                val day2 = LocalDate.now().plusDays(2)
+                val day3 = LocalDate.now().plusDays(3)
+                var added = 0
+                if (saveWorkShift(calId, "${tomorrow.dayOfMonth}.${tomorrow.monthValue}.${tomorrow.year}", "07:00", "15:00", "Aamuvuoro (Demo)", fmt)) added++
+                if (saveWorkShift(calId, "${day2.dayOfMonth}.${day2.monthValue}.${day2.year}", "13:00", "21:00", "Iltavuoro (Demo)", fmt)) added++
+                if (saveWorkShift(calId, "${day3.dayOfMonth}.${day3.monthValue}.${day3.year}", "21:00", "07:00", "Yövuoro (Demo)", fmt)) added++
+                VuorovahtiHelper.saveLastSyncStatus(this, added)
+                VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
+                hideStampOverlay()
+                Toast.makeText(this, "Demo-synkronointi valmis ($added vuoroa viety kalenteriin).", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
         val js = """
             (function() {
                 var bodyText = document.body ? document.body.innerText : "";
@@ -933,6 +1018,9 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
                 } else {
                     hideStampOverlay()
                     isBackgroundListSync = false
+                    VuorovahtiHelper.saveLastSyncStatus(this@MainActivity, totalFoundInBatch)
+                    VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
+                    VuorovahtiHelper.ensureRemindersFromCalendar(this@MainActivity)
                     scheduleNextThreeWeekListCheck()
                     if (totalAddedInBatch > 0) sendNewShiftsAddedNotification(totalAddedInBatch)
                     Toast.makeText(this@MainActivity, "Tarkistettu $totalFoundInBatch merkintää, lisätty/päivitetty $totalAddedInBatch tulevaa merkintää.", Toast.LENGTH_LONG).show()
@@ -971,6 +1059,8 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
                 pagesRemainingToSync = 0
                 hideStampOverlay()
                 isBackgroundListSync = false
+                VuorovahtiHelper.saveLastSyncStatus(this, totalFoundInBatch)
+                VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
                 if (totalAddedInBatch > 0) sendNewShiftsAddedNotification(totalAddedInBatch)
                 Toast.makeText(this, "Lisätty $totalAddedInBatch uutta vuoroa kalenteriin.", Toast.LENGTH_LONG).show()
             }
@@ -995,7 +1085,7 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
 
     private fun scheduleNextThreeWeekListCheck() {
         try {
-            val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
             val intent = Intent(this, ShiftAlarmReceiver::class.java).apply { putExtra("ACTION_TYPE", "CHECK_NEW_LIST") }
             val pi = PendingIntent.getBroadcast(this, 9991, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             if (!SettingsManager.isAutoSyncEnabled(this)) {
@@ -1009,7 +1099,7 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
                 nextPublishDate = nextPublishDate.plusWeeks(3)
             }
             val triggerMillis = nextPublishDate.atTime(11, 5).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-            alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerMillis, pi)
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pi)
         } catch (e: Exception) { e.printStackTrace() }
     }
 
@@ -1048,7 +1138,8 @@ if (VuorovahtiHelper.isDemoMode(SettingsManager.getUsername(this), SettingsManag
         }
         return foundRanges
     }
-private fun parseAndInsertCalendar(cellsJson: String, pageText: String, currentUrl: String, calId: Long): Pair<Int, Int> {
+
+    private fun parseAndInsertCalendar(cellsJson: String, pageText: String, currentUrl: String, calId: Long): Pair<Int, Int> {
         val (targetMonth, targetYear) = resolveMonthAndYear(pageText, currentUrl)
         val fmt = DateTimeFormatter.ofPattern("d.M.yyyy H:mm")
         val listRes = parseListView(pageText, targetMonth, targetYear, calId, fmt)
@@ -1153,7 +1244,8 @@ private fun parseAndInsertCalendar(cellsJson: String, pageText: String, currentU
         }
         return Pair(0, 0)
     }
-private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, String> {
+
+    private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, String> {
         val lines = raw.lines().map { it.trim() }.filter {
             it.length > 2 && !it.equals("Uusi", true) && !it.equals("Lisää uusi", true) &&
             !it.equals("Valinnat", true) && !it.startsWith("Vk", true) &&
@@ -1171,7 +1263,7 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
     private fun scheduleShiftAlarms(startMillis: Long, endMillis: Long, startStr: String, endStr: String, title: String) {
         if (!SettingsManager.isStampNotificationEnabled(this)) return
         try {
-            val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
             val now = System.currentTimeMillis()
             val startAlarmTime = startMillis - (30 * 60 * 1000L)
             if (startAlarmTime > now) {
@@ -1179,7 +1271,7 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
                     putExtra("SHIFT_TITLE", title); putExtra("SHIFT_TIME", startStr); putExtra("IS_ENDING", false)
                 }
                 val startPi = PendingIntent.getBroadcast(this, (startAlarmTime / 60000L).toInt(), startIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, startAlarmTime, startPi)
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, startAlarmTime, startPi)
             }
             val endAlarmTime = endMillis - (30 * 60 * 1000L)
             if (endAlarmTime > now) {
@@ -1187,7 +1279,7 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
                     putExtra("SHIFT_TITLE", title); putExtra("SHIFT_TIME", endStr); putExtra("IS_ENDING", true)
                 }
                 val endPi = PendingIntent.getBroadcast(this, (endAlarmTime / 60000L).toInt() + 1, endIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, endAlarmTime, endPi)
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, endAlarmTime, endPi)
             }
         } catch (e: Exception) { e.printStackTrace() }
     }
@@ -1208,7 +1300,7 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
             val exId = findShiftOnSameDay(calId, sMs, eMs, dayStartMs, dayEndMs)
 
             if (exId == null) {
-                insertEvent(calId, "Työvuoro", loc, desc, sMs, eMs, false)
+                insertEvent(calId, "Työvuoro", loc, desc, sMs, eMs, false, sDt.hour)
                 true
             } else if (loc.isNotEmpty()) updateEvent(exId, loc, desc) else false
         } catch (e: Exception) { false }
@@ -1258,7 +1350,7 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
             } else if (existingIds.size > 1) {
                 for (id in existingIds) contentResolver.delete(CalendarContract.Events.CONTENT_URI, "${CalendarContract.Events._ID} = ?", arrayOf(id.toString()))
             }
-            insertEvent(calId, "Loma", "", "Vuosiloma", minStartMs, maxEndMs, true)
+            insertEvent(calId, "Loma", "", "Vuosiloma", minStartMs, maxEndMs, true, 0)
             true
         } catch (e: Exception) { false }
     }
@@ -1275,6 +1367,7 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
         contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}", null, null)?.use { if (it.moveToFirst()) return it.getLong(0) }
         return null
     }
+
     private fun findShiftOnSameDay(calId: Long, sMs: Long, eMs: Long, dayStartMs: Long, dayEndMs: Long): Long? {
         val exactSel = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.DTEND} = ? AND ${CalendarContract.Events.DELETED} = 0"
         contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), exactSel, arrayOf(calId.toString(), sMs.toString(), eMs.toString()), null)?.use { if (it.moveToFirst()) return it.getLong(0) }
@@ -1295,22 +1388,29 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
         return contentResolver.update(CalendarContract.Events.CONTENT_URI, v, "${CalendarContract.Events._ID} = ?", arrayOf(eventId.toString())) > 0
     }
 
-    private fun insertEvent(calId: Long, title: String, loc: String, desc: String, sMs: Long, eMs: Long, allDay: Boolean) {
+    private fun insertEvent(calId: Long, title: String, loc: String, desc: String, sMs: Long, eMs: Long, allDay: Boolean, startHour: Int = 8) {
         val v = ContentValues().apply {
             put(CalendarContract.Events.DTSTART, sMs); put(CalendarContract.Events.DTEND, eMs)
             put(CalendarContract.Events.TITLE, title); put(CalendarContract.Events.EVENT_LOCATION, loc)
             put(CalendarContract.Events.DESCRIPTION, desc); put(CalendarContract.Events.CALENDAR_ID, calId)
             put(CalendarContract.Events.ALL_DAY, if (allDay) 1 else 0)
             put(CalendarContract.Events.EVENT_TIMEZONE, if (allDay) "UTC" else ZoneId.systemDefault().id)
+            VuorovahtiHelper.applyShiftColor(this, if (allDay) "Loma" else desc.ifEmpty { title }, startHour)
         }
-        contentResolver.insert(CalendarContract.Events.CONTENT_URI, v)
+        try {
+            contentResolver.insert(CalendarContract.Events.CONTENT_URI, v)
+        } catch (_: Exception) {
+            // Jos käyttäjän kalenteritili ei tue tapahtumakohtaisia värejä, tallennetaan ilman EVENT_COLOR-kenttää
+            v.remove(CalendarContract.Events.EVENT_COLOR)
+            contentResolver.insert(CalendarContract.Events.CONTENT_URI, v)
+        }
     }
-        private fun checkAndRequestAllPermissions() {
+
+    private fun checkAndRequestAllPermissions() {
         val neededPermissions = mutableListOf(
             Manifest.permission.READ_CALENDAR,
             Manifest.permission.WRITE_CALENDAR
         )
-        // Android 13+ (API 33) vaatii erillisen luvan ilmoituksille
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             neededPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -1322,6 +1422,5 @@ private fun extractLocAndDesc(startStr: String, raw: String): Pair<String, Strin
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 105)
         }
-        }
-        
+    }
 }
