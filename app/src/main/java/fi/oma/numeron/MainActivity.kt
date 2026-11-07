@@ -136,7 +136,7 @@ object VuorovahtiHelper {
                 if (isWorkShift) {
                     val triggerTime = startTime - (reminderMinutesBefore * 60 * 1000L)
                     if (triggerTime > now) {
-                        val intent = Intent(context, ShiftReminderReceiver::class.java).apply {
+                        val intent = Intent(context, ShiftAlarmReceiver::class.java).apply {
                             putExtra("shift_title", title)
                             putExtra("shift_start", startTime)
                         }
