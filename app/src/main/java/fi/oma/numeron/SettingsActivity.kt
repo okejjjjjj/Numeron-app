@@ -688,6 +688,7 @@ class SettingsActivity : AppCompatActivity() {
         
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
+        (testWebView?.parent as? ViewGroup)?.removeView(testWebView)
         testWebView?.destroy()
         testWebView = null
         super.onDestroy()
