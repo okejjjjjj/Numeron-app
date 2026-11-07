@@ -482,102 +482,210 @@ class SettingsActivity : AppCompatActivity() {
             testWebView = null
         }
 
-        // Aikakatkaisu 15 sekunnin kohdalla, jos palvelin ei vastaa
-        mainHandler.postDelayed({
-            finishTest(false, "✗ Aikakatkaisu: Palvelin ei vastannut tai kirjautuminen jäi odottamaan lisävahvistusta.")
-        }, 15000L)
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun verifyCredentialsLive(
+        orgRaw: String,
+        user: String,
+        pass: String,
+        btn: Button,
+        statusView: TextView
+    ) {
+        statusView.visibility = View.VISIBLE
 
-        testWebView = WebView(this).apply {
+        if (VuorovahtiHelper.isDemoMode(user, pass)) {
+            statusView.setTextColor(Color.parseColor("#10B981"))
+            statusView.text = "✓ Demo-tila tunnistettu! Voit tallentaa asetukset."
+            VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
+            return
+        }
+
+        if (orgRaw.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+            statusView.setTextColor(Color.parseColor("#F87171"))
+            statusView.text = "✗ Täytä organisaatio, käyttäjätunnus ja salasana ennen testiä."
+            return
+        }
+
+        val cleanOrg = orgRaw.lowercase()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore("/")
+            .substringBefore("?")
+            .trim()
+        val baseUrl = if (cleanOrg.contains(".")) "https://$cleanOrg" else "https://$cleanOrg.numeronwfm.com"
+        val testUrl = "$baseUrl/WorktimeStamping"
+
+        btn.isEnabled = false
+        btn.text = "Testataan yhteyttä..."
+        statusView.setTextColor(Color.parseColor("#38BDF8"))
+        statusView.text = "Yhdistetään osoitteeseen $baseUrl..."
+
+        mainHandler.removeCallbacksAndMessages(null)
+        (testWebView?.parent as? ViewGroup)?.removeView(testWebView)
+        testWebView?.destroy()
+        CookieManager.getInstance().removeAllCookies(null)
+
+        val safeU = user.replace("\\", "\\\\").replace("'", "\\'")
+        val safeP = pass.replace("\\", "\\\\").replace("'", "\\'")
+
+        var loginSubmitted = false
+        var testFinished = false
+        var pollCount = 0
+
+        fun finishTest(success: Boolean, message: String) {
+            if (testFinished) return
+            testFinished = true
+            mainHandler.removeCallbacksAndMessages(null)
+            btn.isEnabled = true
+            btn.text = "Testaa yhteys ja tunnukset"
+            statusView.setTextColor(Color.parseColor(if (success) "#10B981" else "#F87171"))
+            statusView.text = message
+            if (success) VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
+            (testWebView?.parent as? ViewGroup)?.removeView(testWebView)
+            testWebView?.destroy()
+            testWebView = null
+        }
+
+        val webView = WebView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(1, 1)
+            alpha = 0.01f
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            webViewClient = object : WebViewClient() {
-                override fun onReceivedError(
-                    view: WebView?,
-                    errorCode: Int,
-                    description: String?,
-                    failingUrl: String?
-                ) {
-                    if (failingUrl == testUrl || failingUrl?.startsWith(baseUrl) == true) {
-                        finishTest(false, "✗ Yhteysvirhe: Palvelinta ($baseUrl) ei löytynyt. Tarkista organisaation tunnus.")
+            settings.databaseEnabled = true
+        }
+
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+        }
+
+        // Liitetään WebView ikkunaan, jotta DOM ja lomakkeet renderöityvät oikein
+        addContentView(webView, ViewGroup.LayoutParams(1, 1))
+        testWebView = webView
+
+        fun pollLoginState() {
+            if (testFinished || testWebView == null) return
+            pollCount++
+            if (pollCount > 22) {
+                finishTest(false, "✗ Aikakatkaisu: Palvelin ei vastannut tai kirjautuminen jäi odottamaan vahvistusta.")
+                return
+            }
+
+            val submittedFlag = if (loginSubmitted) "true" else "false"
+            val js = """
+                (function() {
+                    var bodyTxt = (document.body ? document.body.innerText : "").toLowerCase();
+                    var href = (window.location.href || "").toLowerCase();
+                    var passInputs = document.querySelectorAll('input[type="password"]');
+                    var passEl = null;
+                    for (var p = 0; p < passInputs.length; p++) {
+                        if (!passInputs[p].disabled) { passEl = passInputs[p]; break; }
                     }
-                }
 
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    if (testFinished || view == null) return
+                    // 1. Tarkistetaan olemmeko jo kirjautuneena sisällä
+                    if (!passEl && href.indexOf('login') === -1 && href.indexOf('auth') === -1 &&
+                        (bodyTxt.indexOf('leimaa') !== -1 || bodyTxt.indexOf('työaika') !== -1 ||
+                         bodyTxt.indexOf('kalenteri') !== -1 || bodyTxt.indexOf('uloskirjaus') !== -1 ||
+                         bodyTxt.indexOf('kirjaudu ulos') !== -1 || bodyTxt.indexOf('työvuoro') !== -1)) {
+                        return "LOGGED_IN_SUCCESS";
+                    }
 
-                    view.evaluateJavascript("""
-                        (function() {
-                            var bodyTxt = (document.body ? document.body.innerText : "").toLowerCase();
-                            var passInputs = document.querySelectorAll('input[type="password"]');
-                            var passEl = null;
-                            for (var p = 0; p < passInputs.length; p++) {
-                                if (passInputs[p].offsetParent !== null && !passInputs[p].disabled) { passEl = passInputs[p]; break; }
-                            }
+                    // 2. Tarkistetaan selkeä virheilmoitus sivulla
+                    if ($submittedFlag && (bodyTxt.indexOf('virheellinen') !== -1 || bodyTxt.indexOf('epäonnistui') !== -1 ||
+                        bodyTxt.indexOf('invalid') !== -1 || bodyTxt.indexOf('väärä') !== -1 ||
+                        bodyTxt.indexOf('tarkista käyttäjätunnus') !== -1 || bodyTxt.indexOf('incorrect') !== -1)) {
+                        return "LOGIN_FAILED_ERROR";
+                    }
 
-                            // Jos olemme jo sisällä (ei salasanakenttää ja sivu sisältää Numeronin elementtejä)
-                            if (!passEl && (window.location.href.toLowerCase().indexOf('worktimestamping') !== -1 || bodyTxt.indexOf('leimaa') !== -1 || bodyTxt.indexOf('työaika') !== -1 || bodyTxt.indexOf('kalenteri') !== -1 || bodyTxt.indexOf('uloskirjaus') !== -1 || bodyTxt.indexOf('kirjaudu ulos') !== -1)) {
-                                return "LOGGED_IN_SUCCESS";
-                            }
+                    function setNativeValue(el, val) {
+                        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        if (setter) setter.call(el, val);
+                        else el.value = val;
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
 
-                            // Tarkistetaan virheilmoitus kirjautumisyrityksen jälkeen
-                            if ($loginSubmitted && (passEl || bodyTxt.indexOf('virheellinen') !== -1 || bodyTxt.indexOf('epäonnistui') !== -1 || bodyTxt.indexOf('invalid') !== -1 || bodyTxt.indexOf('väärä') !== -1)) {
-                                return "LOGIN_FAILED_ERROR";
-                            }
+                    var userInputs = document.querySelectorAll('input[type="email"], input[name*="user" i], input[name*="login" i], input[id*="user" i], input[name*="fmt" i], input[type="text"]');
+                    var userEl = null;
+                    for (var u = 0; u < userInputs.length; u++) {
+                        if (!userInputs[u].readOnly && !userInputs[u].disabled) { userEl = userInputs[u]; break; }
+                    }
 
-                            function setNativeValue(el, val) {
-                                var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                                if (setter) setter.call(el, val);
-                                else el.value = val;
-                                el.dispatchEvent(new Event('input', { bubbles: true }));
-                                el.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
+                    // Jos kaksivaiheinen kirjautuminen (ensin tunnus, sitten salasana)
+                    if (!passEl && userEl && !window._userStepDone) {
+                        window._userStepDone = true;
+                        setNativeValue(userEl, '$safeU');
+                        var nextBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="next" i], input[id*="next" i]');
+                        if (nextBtn) { nextBtn.click(); return "STEP_USER_SUBMITTED"; }
+                    }
 
-                            var userInputs = document.querySelectorAll('input[type="email"], input[name*="user" i], input[name*="login" i], input[id*="user" i], input[name*="fmt" i], input[type="text"]');
-                            var userEl = null;
-                            for (var u = 0; u < userInputs.length; u++) {
-                                if (userInputs[u].offsetParent !== null && !userInputs[u].readOnly && !userInputs[u].disabled) { userEl = userInputs[u]; break; }
-                            }
+                    // Syötetään tunnus ja salasana vain kerran per sivunlataus
+                    if (passEl && !window._passStepDone) {
+                        window._passStepDone = true;
+                        if (userEl) setNativeValue(userEl, '$safeU');
+                        setNativeValue(passEl, '$safeP');
+                        var submitBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="login" i], button[name*="login" i], input[id*="SignIn" i], button');
+                        if (submitBtn) { submitBtn.click(); return "SUBMITTED_NOW"; }
+                        if (passEl.form) { passEl.form.submit(); return "SUBMITTED_NOW"; }
+                    }
 
-                            if (userEl && !passEl) {
-                                setNativeValue(userEl, '$safeU');
-                                var nextBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="next" i], input[id*="next" i]');
-                                if (nextBtn) { nextBtn.click(); return "STEP_USER_SUBMITTED"; }
-                            }
+                    if ($submittedFlag && passEl && window._passStepDone) {
+                        return "STILL_ON_LOGIN";
+                    }
 
-                            if (passEl) {
-                                if (userEl) setNativeValue(userEl, '$safeU');
-                                setNativeValue(passEl, '$safeP');
-                                var submitBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="login" i], button[name*="login" i], input[id*="SignIn" i]');
-                                if (submitBtn) { submitBtn.click(); return "SUBMITTED_NOW"; }
-                                if (passEl.form) { passEl.form.submit(); return "SUBMITTED_NOW"; }
-                            }
-                            return "WAITING";
-                        })();
-                    """.trimIndent()) { res ->
-                        val r = res ?: ""
-                        when {
-                            r.contains("LOGGED_IN_SUCCESS") -> {
-                                finishTest(true, "✓ Kirjautuminen onnistui! Tunnukset ja yhteys toimivat.")
-                            }
-                            r.contains("LOGIN_FAILED_ERROR") -> {
-                                finishTest(false, "✗ Kirjautuminen epäonnistui: Tarkista käyttäjätunnus ja salasana.")
-                            }
-                            r.contains("SUBMITTED_NOW") -> {
-                                loginSubmitted = true
-                                statusView.text = "Tarkistetaan käyttäjätunnusta ja salasanaa..."
-                                mainHandler.postDelayed({
-                                    if (!testFinished) view.reload()
-                                }, 3500L)
-                            }
-                        }
+                    return "WAITING";
+                })();
+            """.trimIndent()
+
+            webView.evaluateJavascript(js) { res ->
+                if (testFinished) return@evaluateJavascript
+                val r = res ?: ""
+                when {
+                    r.contains("LOGGED_IN_SUCCESS") -> {
+                        finishTest(true, "✓ Kirjautuminen onnistui! Tunnukset ja yhteys toimivat.")
+                    }
+                    r.contains("LOGIN_FAILED_ERROR") -> {
+                        finishTest(false, "✗ Kirjautuminen epäonnistui: Tarkista käyttäjätunnus ja salasana.")
+                    }
+                    r.contains("SUBMITTED_NOW") -> {
+                        loginSubmitted = true
+                        statusView.text = "Tarkistetaan käyttäjätunnusta ja salasanaa..."
+                        mainHandler.postDelayed({ pollLoginState() }, 2000L)
+                    }
+                    r.contains("STILL_ON_LOGIN") && pollCount >= 6 -> {
+                        finishTest(false, "✗ Kirjautuminen ei mennyt läpi. Tarkista käyttäjätunnus ja salasana.")
+                    }
+                    else -> {
+                        mainHandler.postDelayed({ pollLoginState() }, 900L)
                     }
                 }
             }
-            loadUrl(testUrl)
         }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun onReceivedError(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+                error: android.webkit.WebResourceError?
+            ) {
+                // Huomioidaan vain pääkehyksen (isForMainFrame) oikeat verkkovirheet
+                if (request?.isForMainFrame == true) {
+                    finishTest(false, "✗ Yhteysvirhe: Palvelinta ($baseUrl) ei löytynyt. Tarkista organisaation tunnus.")
+                }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                if (!testFinished) {
+                    mainHandler.removeCallbacksAndMessages(null)
+                    mainHandler.postDelayed({ pollLoginState() }, 600L)
+                }
+            }
+        }
+
+        webView.loadUrl(testUrl)
     }
 
+        
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         testWebView?.destroy()
