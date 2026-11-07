@@ -35,7 +35,6 @@ import org.json.JSONArray
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
-import android.content.ContentValues
 import android.view.HapticFeedbackConstants
 import java.text.SimpleDateFormat
 import java.util.Date
