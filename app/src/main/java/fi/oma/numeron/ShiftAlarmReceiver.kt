@@ -95,6 +95,15 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
             .setContentIntent(pi)
             .build()
 
+        // Tallennetaan toteutunut muistutus asetussivun lokiin:
+        VuorovahtiHelper.saveLastTriggeredReminder(
+            context,
+            "${if (isEnding) "Ulosleimaus" else "Sisäänleimaus"} ($shiftTitle${if (shiftTime.isNotEmpty()) " klo $shiftTime" else ""})"
+        )
+
+        nm.notify(if (isEnding) 2002 else 1001, notification)
+
+            
         nm.notify(if (isEnding) 2002 else 1001, notification)
     }
 }
