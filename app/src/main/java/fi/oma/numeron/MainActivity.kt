@@ -39,9 +39,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Color
 import android.os.Build
-import android.provider.CalendarContract
 import android.view.HapticFeedbackConstants
-import android.view.View
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
