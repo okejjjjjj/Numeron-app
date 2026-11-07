@@ -251,6 +251,8 @@ class MainActivity : AppCompatActivity() {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
             setBackgroundColor(Color.parseColor("#0F172A"))
         }
+// Asettaa tulevien kalenterivuorojen hälytykset äänettömästi taustalla
+VuorovahtiHelper.ensureRemindersFromCalendar(this)
 
         webView = WebView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
