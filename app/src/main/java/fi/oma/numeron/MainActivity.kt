@@ -35,6 +35,66 @@ import org.json.JSONArray
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.Color
+import android.os.Build
+import android.provider.CalendarContract
+import android.view.HapticFeedbackConstants
+import android.view.View
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+object VuorovahtiHelper {
+
+    // 1. Määritä kalenterimerkinnän väri vuoron alkamisajan tai tyypin mukaan
+    fun getShiftEventColor(title: String, startHour: Int): Int {
+        val lowerTitle = title.lowercase(Locale.getDefault())
+        return when {
+            lowerTitle.contains("loma") || lowerTitle.contains("vapaa") -> Color.parseColor("#00ACC1") // Turkoosi (Loma/Vapaa)
+            startHour in 5..10 -> Color.parseColor("#43A047")  // Vihreä (Aamuvuoro)
+            startHour in 11..17 -> Color.parseColor("#FB8C00") // Oranssi (Iltavuoro)
+            else -> Color.parseColor("#8E24AA")                // Violetti (Yövuoro)
+        }
+    }
+
+    // Käyttöesimerkki, kun luot ContentValues-olion CalendarContract.Events-tauluun:
+    fun applyShiftColor(values: ContentValues, title: String, startHour: Int) {
+        values.put(CalendarContract.Events.EVENT_COLOR, getShiftEventColor(title, startHour))
+    }
+
+    // 2. Tallenna ja hae "Viimeksi synkronoitu" -aikaleima
+    fun saveLastSyncStatus(context: Context, shiftCount: Int) {
+        val timeFormat = SimpleDateFormat("dd.MM. 'klo' HH:mm", Locale.getDefault())
+        val statusText = "Synkronoitu: ${timeFormat.format(Date())} ($shiftCount vuoroa)"
+        context.getSharedPreferences("vuorovahti_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_sync_status", statusText)
+            .apply()
+    }
+
+    fun getLastSyncStatus(context: Context): String {
+        return context.getSharedPreferences("vuorovahti_prefs", Context.MODE_PRIVATE)
+            .getString("last_sync_status", "Ei vielä synkronoitu") ?: "Ei vielä synkronoitu"
+    }
+
+    // 3. Napakka haptinen värinäpalaute onnistuneen synkronoinnin tai biometrian jälkeen
+    fun triggerConfirmHaptics(view: View) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        } else {
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+    }
+
+    // 4. Tarkista onko kyseessä Demo-käyttäjä
+    fun isDemoMode(username: String?, password: String?): Boolean {
+        return username?.trim().equals("demo", ignoreCase = true) &&
+               password?.trim().equals("demo", ignoreCase = true)
+    }
+}
+
 
 class MainActivity : AppCompatActivity() {
 
