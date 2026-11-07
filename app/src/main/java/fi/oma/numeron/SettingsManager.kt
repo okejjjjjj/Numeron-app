@@ -34,7 +34,8 @@ object SettingsManager {
     }
 
     fun hasValidOrganization(context: Context): Boolean =
-        getOrganizationRaw(context).trim().isNotEmpty()
+    getOrganizationRaw(context).trim().isNotEmpty() || 
+    getUsername(context).trim().equals("demo", ignoreCase = true)
 
     fun isFirstRun(context: Context): Boolean =
         !getPrefs(context).contains("settings_initialized") || !hasValidOrganization(context)
