@@ -36,9 +36,6 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import android.content.ContentValues
-import android.content.Context
-import android.graphics.Color
-import android.os.Build
 import android.view.HapticFeedbackConstants
 import java.text.SimpleDateFormat
 import java.util.Date
