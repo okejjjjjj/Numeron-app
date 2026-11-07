@@ -71,6 +71,102 @@ object VuorovahtiHelper {
         return context.getSharedPreferences("vuorovahti_prefs", Context.MODE_PRIVATE)
             .getString("last_sync_status", "Ei vielä synkronoitu") ?: "Ei vielä synkronoitu"
     }
+    // Tallenna edellinen toteutunut leimausmuistutus (kutsutaan ShiftAlarmReceiveristä)
+    fun saveLastTriggeredReminder(context: Context, infoText: String) {
+        val timeFormat = SimpleDateFormat("dd.MM. 'klo' HH:mm", Locale.getDefault())
+        val fullText = "${timeFormat.format(Date())} – $infoText"
+        context.getSharedPreferences("vuorovahti_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_triggered_reminder", fullText)
+            .apply()
+    }
+
+    fun getLastTriggeredReminder(context: Context): String {
+        return context.getSharedPreferences("vuorovahti_prefs", Context.MODE_PRIVATE)
+            .getString("last_triggered_reminder", "Ei vielä toteutuneita muistutuksia")
+            ?: "Ei vielä toteutuneita muistutuksia"
+    }
+
+    // Laskee ja palauttaa suoraan kalenterista seuraavan tulevan leimausmuistutuksen tekstin
+    fun getNextScheduledReminderText(
+        context: Context,
+        reminderMinutesBefore: Int = 30,
+        shiftKeywords: List<String> = listOf("työvuoro", "aamuvuoro", "iltavuoro", "yövuoro", "vuoro")
+    ): String {
+        if (!SettingsManager.isStampNotificationEnabled(context)) {
+            return "Ei käytössä (leimausmuistutukset kytketty pois)"
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR)
+            != PackageManager.PERMISSION_GRANTED) {
+            return "Kalenterilupa puuttuu – muistutuksia ei voida tarkistaa"
+        }
+
+        val now = System.currentTimeMillis()
+        val twoWeeksAhead = now + 14L * 24 * 60 * 60 * 1000L
+
+        val projection = arrayOf(
+            CalendarContract.Events.TITLE,
+            CalendarContract.Events.DESCRIPTION,
+            CalendarContract.Events.DTSTART,
+            CalendarContract.Events.DTEND
+        )
+        val selection = "${CalendarContract.Events.DTEND} > ? AND ${CalendarContract.Events.DTSTART} < ? AND ${CalendarContract.Events.DELETED} = 0"
+        val selectionArgs = arrayOf(now.toString(), twoWeeksAhead.toString())
+
+        var earliestTrigger = Long.MAX_VALUE
+        var earliestDesc = ""
+
+        val dateFmt = SimpleDateFormat("dd.MM. 'klo' HH:mm", Locale.getDefault())
+        val hourFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+        context.contentResolver.query(
+            CalendarContract.Events.CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            "${CalendarContract.Events.DTSTART} ASC"
+        )?.use { cursor ->
+            val titleIdx = cursor.getColumnIndex(CalendarContract.Events.TITLE)
+            val descIdx = cursor.getColumnIndex(CalendarContract.Events.DESCRIPTION)
+            val startIdx = cursor.getColumnIndex(CalendarContract.Events.DTSTART)
+            val endIdx = cursor.getColumnIndex(CalendarContract.Events.DTEND)
+
+            while (cursor.moveToNext()) {
+                val title = cursor.getString(titleIdx) ?: continue
+                val desc = if (descIdx != -1) (cursor.getString(descIdx) ?: "") else ""
+                val startTime = cursor.getLong(startIdx)
+                val endTime = if (endIdx != -1) cursor.getLong(endIdx) else 0L
+
+                val lowerTitle = title.lowercase(Locale.getDefault())
+                val isWorkShift = shiftKeywords.any { lowerTitle.contains(it) } &&
+                                  !lowerTitle.contains("loma") &&
+                                  !lowerTitle.contains("vapaa")
+
+                if (isWorkShift) {
+                    val shiftName = desc.lines().firstOrNull()?.takeIf { it.isNotBlank() } ?: title
+                    val startTrigger = startTime - (reminderMinutesBefore * 60 * 1000L)
+                    if (startTrigger > now && startTrigger < earliestTrigger) {
+                        earliestTrigger = startTrigger
+                        earliestDesc = "${dateFmt.format(Date(startTrigger))} (Sisäänleimaus – $shiftName klo ${hourFmt.format(Date(startTime))})"
+                    }
+
+                    if (endTime > startTime) {
+                        val endTrigger = endTime - (reminderMinutesBefore * 60 * 1000L)
+                        if (endTrigger > now && endTrigger < earliestTrigger) {
+                            earliestTrigger = endTrigger
+                            earliestDesc = "${dateFmt.format(Date(endTrigger))} (Ulosleimaus – $shiftName klo ${hourFmt.format(Date(endTime))})"
+                        }
+                    }
+                }
+            }
+        }
+
+        return if (earliestTrigger != Long.MAX_VALUE) {
+            earliestDesc
+        } else {
+            "Ei tulevia työvuoroja kalenterissa seuraavan 14 vrk aikana"
+        }
+    }
 
     // 3. Napakka haptinen värinäpalaute onnistuneen synkronoinnin tai biometrian jälkeen
     fun triggerConfirmHaptics(view: View) {
