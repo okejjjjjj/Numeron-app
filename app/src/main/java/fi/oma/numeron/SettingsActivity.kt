@@ -1,17 +1,25 @@
 package fi.oma.numeron
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.CalendarContract
 import android.text.InputType
+import android.text.method.HideReturnsTransformationMethod
+import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -22,6 +30,10 @@ class SettingsActivity : AppCompatActivity() {
     private data class CalendarItem(val id: Long, val title: String)
     private val calendarList = mutableListOf<CalendarItem>()
     private lateinit var calendarSpinner: Spinner
+    private lateinit var nextReminderStatusText: TextView
+    private lateinit var lastReminderStatusText: TextView
+    private var testWebView: WebView? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
@@ -129,15 +141,98 @@ class SettingsActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
             styleEdit(this)
         }
+
+        // Salasanakenttä + Näytä/Piilota-painike samalla rivillä
+        val passRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#0F172A"))
+                setStroke(dp(1), Color.parseColor("#334155"))
+            }
+        }
+
         val passEdit = EditText(this).apply {
             hint = "Salasana"
             setText(SettingsManager.getPassword(this@SettingsActivity))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            styleEdit(this)
+            transformationMethod = PasswordTransformationMethod.getInstance()
+            setTextColor(Color.parseColor("#F8FAFC"))
+            setHintTextColor(Color.parseColor("#64748B"))
+            textSize = 14.5f
+            setPadding(dp(16), dp(13), dp(8), dp(13))
+            background = null
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         }
+
+        var isPasswordVisible = false
+        val btnTogglePass = Button(this).apply {
+            text = "Näytä"
+            isAllCaps = false
+            textSize = 12f
+            setTextColor(Color.parseColor("#38BDF8"))
+            background = null
+            minHeight = 0
+            minimumHeight = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(12), dp(8), dp(14), dp(8))
+            setOnClickListener {
+                isPasswordVisible = !isPasswordVisible
+                val sel = passEdit.selectionEnd
+                if (isPasswordVisible) {
+                    passEdit.transformationMethod = HideReturnsTransformationMethod.getInstance()
+                    text = "Piilota"
+                } else {
+                    passEdit.transformationMethod = PasswordTransformationMethod.getInstance()
+                    text = "Näytä"
+                }
+                if (sel >= 0) passEdit.setSelection(sel)
+            }
+        }
+        passRow.addView(passEdit)
+        passRow.addView(btnTogglePass)
+
+        // Tunnusten testauspainike ja tilarivi
+        val authStatusText = TextView(this).apply {
+            text = ""
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(dp(4), dp(6), dp(4), dp(2))
+            visibility = View.GONE
+        }
+
+        val btnTestCreds = Button(this).apply {
+            text = "Testaa yhteys ja tunnukset"
+            isAllCaps = false
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#E2E8F0"))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(Color.parseColor("#334155"))
+                setStroke(dp(1), Color.parseColor("#475569"))
+            }
+            layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(2) }
+            setOnClickListener {
+                verifyCredentialsLive(
+                    orgEdit.text.toString().trim(),
+                    userEdit.text.toString().trim(),
+                    passEdit.text.toString(),
+                    this,
+                    authStatusText
+                )
+            }
+        }
+
         cardOrg.addView(orgEdit)
         cardOrg.addView(userEdit)
-        cardOrg.addView(passEdit)
+        cardOrg.addView(passRow)
+        cardOrg.addView(btnTestCreds)
+        cardOrg.addView(authStatusText)
 
         // 2. Biometrinen tunnistus
         val cardBio = createCard(
@@ -184,7 +279,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         cardCal.addView(calendarSpinner)
 
-        // 5. Leimausnotifikaatiot
+        // 5. Leimausnotifikaatiot + Edellinen ja Seuraava muistutus
         val cardNotif = createCard(
             "5. Leimausmuistutukset",
             "Näytä hiljainen ilmoitus ja pikaleimausnappi 30 min ennen vuoron alkua ja loppua."
@@ -193,7 +288,49 @@ class SettingsActivity : AppCompatActivity() {
             "Käytä leimausnotifikaatioita",
             SettingsManager.isStampNotificationEnabled(this)
         )
+
+        val reminderInfoBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(10).toFloat()
+                setColor(Color.parseColor("#0F172A"))
+                setStroke(dp(1), Color.parseColor("#1E293B"))
+            }
+        }
+
+        lastReminderStatusText = TextView(this).apply {
+            text = "Edellinen muistutus: ${VuorovahtiHelper.getLastTriggeredReminder(this@SettingsActivity)}"
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(0, 0, 0, dp(6))
+        }
+
+        nextReminderStatusText = TextView(this).apply {
+            text = "Seuraava muistutus: ${VuorovahtiHelper.getNextScheduledReminderText(this@SettingsActivity)}"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#38BDF8"))
+        }
+
+        notifSwitch.setOnCheckedChangeListener { _, isChecked ->
+            if (!isChecked) {
+                nextReminderStatusText.text = "Seuraava muistutus: Ei käytössä (kytketty pois)"
+                nextReminderStatusText.setTextColor(Color.parseColor("#64748B"))
+            } else {
+                VuorovahtiHelper.ensureRemindersFromCalendar(this@SettingsActivity)
+                nextReminderStatusText.text = "Seuraava muistutus: ${VuorovahtiHelper.getNextScheduledReminderText(this@SettingsActivity)}"
+                nextReminderStatusText.setTextColor(Color.parseColor("#38BDF8"))
+            }
+        }
+
+        reminderInfoBox.addView(lastReminderStatusText)
+        reminderInfoBox.addView(nextReminderStatusText)
+
         cardNotif.addView(notifSwitch)
+        cardNotif.addView(reminderInfoBox)
 
         // Painikkeet
         val btnRow = LinearLayout(this).apply {
@@ -250,6 +387,7 @@ class SettingsActivity : AppCompatActivity() {
                     notifSwitch.isChecked,
                     calId
                 )
+                VuorovahtiHelper.ensureRemindersFromCalendar(this@SettingsActivity)
                 VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
                 Toast.makeText(this@SettingsActivity, "Asetukset tallennettu!", Toast.LENGTH_SHORT).show()
                 setResult(RESULT_OK)
@@ -274,7 +412,177 @@ class SettingsActivity : AppCompatActivity() {
         rootScroll.addView(container)
         setContentView(rootScroll)
 
+        // Varmistetaan kalenterihälytykset ja päivitetään tekstit heti asetussivun avautuessa
+        VuorovahtiHelper.ensureRemindersFromCalendar(this)
+        refreshReminderTexts()
         loadAvailableCalendars()
+    }
+
+    private fun refreshReminderTexts() {
+        lastReminderStatusText.text = "Edellinen muistutus: ${VuorovahtiHelper.getLastTriggeredReminder(this)}"
+        nextReminderStatusText.text = "Seuraava muistutus: ${VuorovahtiHelper.getNextScheduledReminderText(this)}"
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun verifyCredentialsLive(
+        orgRaw: String,
+        user: String,
+        pass: String,
+        btn: Button,
+        statusView: TextView
+    ) {
+        statusView.visibility = View.VISIBLE
+
+        if (VuorovahtiHelper.isDemoMode(user, pass)) {
+            statusView.setTextColor(Color.parseColor("#10B981"))
+            statusView.text = "✓ Demo-tila tunnistettu! Voit tallentaa asetukset."
+            VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
+            return
+        }
+
+        if (orgRaw.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+            statusView.setTextColor(Color.parseColor("#F87171"))
+            statusView.text = "✗ Täytä organisaatio, käyttäjätunnus ja salasana ennen testiä."
+            return
+        }
+
+        val cleanOrg = orgRaw.lowercase()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore("/")
+            .substringBefore("?")
+            .trim()
+        val baseUrl = if (cleanOrg.contains(".")) "https://$cleanOrg" else "https://$cleanOrg.numeronwfm.com"
+        val testUrl = "$baseUrl/WorktimeStamping"
+
+        btn.isEnabled = false
+        btn.text = "Testataan yhteyttä..."
+        statusView.setTextColor(Color.parseColor("#38BDF8"))
+        statusView.text = "Yhdistetään osoitteeseen $baseUrl..."
+
+        testWebView?.destroy()
+        CookieManager.getInstance().removeAllCookies(null)
+
+        val safeU = user.replace("\\", "\\\\").replace("'", "\\'")
+        val safeP = pass.replace("\\", "\\\\").replace("'", "\\'")
+
+        var loginSubmitted = false
+        var testFinished = false
+
+        fun finishTest(success: Boolean, message: String) {
+            if (testFinished) return
+            testFinished = true
+            mainHandler.removeCallbacksAndMessages(null)
+            btn.isEnabled = true
+            btn.text = "Testaa yhteys ja tunnukset"
+            statusView.setTextColor(Color.parseColor(if (success) "#10B981" else "#F87171"))
+            statusView.text = message
+            if (success) VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
+            testWebView?.destroy()
+            testWebView = null
+        }
+
+        // Aikakatkaisu 15 sekunnin kohdalla, jos palvelin ei vastaa
+        mainHandler.postDelayed({
+            finishTest(false, "✗ Aikakatkaisu: Palvelin ei vastannut tai kirjautuminen jäi odottamaan lisävahvistusta.")
+        }, 15000L)
+
+        testWebView = WebView(this).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            webViewClient = object : WebViewClient() {
+                override fun onReceivedError(
+                    view: WebView?,
+                    errorCode: Int,
+                    description: String?,
+                    failingUrl: String?
+                ) {
+                    if (failingUrl == testUrl || failingUrl?.startsWith(baseUrl) == true) {
+                        finishTest(false, "✗ Yhteysvirhe: Palvelinta ($baseUrl) ei löytynyt. Tarkista organisaation tunnus.")
+                    }
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (testFinished || view == null) return
+
+                    view.evaluateJavascript("""
+                        (function() {
+                            var bodyTxt = (document.body ? document.body.innerText : "").toLowerCase();
+                            var passInputs = document.querySelectorAll('input[type="password"]');
+                            var passEl = null;
+                            for (var p = 0; p < passInputs.length; p++) {
+                                if (passInputs[p].offsetParent !== null && !passInputs[p].disabled) { passEl = passInputs[p]; break; }
+                            }
+
+                            // Jos olemme jo sisällä (ei salasanakenttää ja sivu sisältää Numeronin elementtejä)
+                            if (!passEl && (window.location.href.toLowerCase().indexOf('worktimestamping') !== -1 || bodyTxt.indexOf('leimaa') !== -1 || bodyTxt.indexOf('työaika') !== -1 || bodyTxt.indexOf('kalenteri') !== -1 || bodyTxt.indexOf('uloskirjaus') !== -1 || bodyTxt.indexOf('kirjaudu ulos') !== -1)) {
+                                return "LOGGED_IN_SUCCESS";
+                            }
+
+                            // Tarkistetaan virheilmoitus kirjautumisyrityksen jälkeen
+                            if ($loginSubmitted && (passEl || bodyTxt.indexOf('virheellinen') !== -1 || bodyTxt.indexOf('epäonnistui') !== -1 || bodyTxt.indexOf('invalid') !== -1 || bodyTxt.indexOf('väärä') !== -1)) {
+                                return "LOGIN_FAILED_ERROR";
+                            }
+
+                            function setNativeValue(el, val) {
+                                var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                                if (setter) setter.call(el, val);
+                                else el.value = val;
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+
+                            var userInputs = document.querySelectorAll('input[type="email"], input[name*="user" i], input[name*="login" i], input[id*="user" i], input[name*="fmt" i], input[type="text"]');
+                            var userEl = null;
+                            for (var u = 0; u < userInputs.length; u++) {
+                                if (userInputs[u].offsetParent !== null && !userInputs[u].readOnly && !userInputs[u].disabled) { userEl = userInputs[u]; break; }
+                            }
+
+                            if (userEl && !passEl) {
+                                setNativeValue(userEl, '$safeU');
+                                var nextBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="next" i], input[id*="next" i]');
+                                if (nextBtn) { nextBtn.click(); return "STEP_USER_SUBMITTED"; }
+                            }
+
+                            if (passEl) {
+                                if (userEl) setNativeValue(userEl, '$safeU');
+                                setNativeValue(passEl, '$safeP');
+                                var submitBtn = document.querySelector('input[type="submit"], button[type="submit"], button[id*="login" i], button[name*="login" i], input[id*="SignIn" i]');
+                                if (submitBtn) { submitBtn.click(); return "SUBMITTED_NOW"; }
+                                if (passEl.form) { passEl.form.submit(); return "SUBMITTED_NOW"; }
+                            }
+                            return "WAITING";
+                        })();
+                    """.trimIndent()) { res ->
+                        val r = res ?: ""
+                        when {
+                            r.contains("LOGGED_IN_SUCCESS") -> {
+                                finishTest(true, "✓ Kirjautuminen onnistui! Tunnukset ja yhteys toimivat.")
+                            }
+                            r.contains("LOGIN_FAILED_ERROR") -> {
+                                finishTest(false, "✗ Kirjautuminen epäonnistui: Tarkista käyttäjätunnus ja salasana.")
+                            }
+                            r.contains("SUBMITTED_NOW") -> {
+                                loginSubmitted = true
+                                statusView.text = "Tarkistetaan käyttäjätunnusta ja salasanaa..."
+                                mainHandler.postDelayed({
+                                    if (!testFinished) view.reload()
+                                }, 3500L)
+                            }
+                        }
+                    }
+                }
+            }
+            loadUrl(testUrl)
+        }
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        testWebView?.destroy()
+        testWebView = null
+        super.onDestroy()
     }
 
     private fun loadAvailableCalendars() {
@@ -330,6 +638,10 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 201) loadAvailableCalendars()
+        if (requestCode == 201) {
+            loadAvailableCalendars()
+            VuorovahtiHelper.ensureRemindersFromCalendar(this)
+            refreshReminderTexts()
+        }
     }
 }
