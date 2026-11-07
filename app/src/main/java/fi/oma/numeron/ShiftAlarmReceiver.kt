@@ -16,7 +16,11 @@ class ShiftAlarmReceiver : BroadcastReceiver() {
     VuorovahtiHelper.ensureRemindersFromCalendar(context)
     return
         }
-        
+                if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            VuorovahtiHelper.ensureRemindersFromCalendar(context)
+            return
+                }
+                
         val actionType = intent.getStringExtra("ACTION_TYPE") ?: "STAMP"
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
