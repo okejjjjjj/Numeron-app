@@ -2,6 +2,7 @@ package fi.oma.numeron
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -87,6 +88,82 @@ object VuorovahtiHelper {
         return username?.trim().equals("demo", ignoreCase = true) &&
                password?.trim().equals("demo", ignoreCase = true)
     }
+        // Tarkistaa tulevat työvuorot suoraan kalenterista ja asettaa hälytykset äänettömästi
+    fun ensureRemindersFromCalendar(
+        context: Context,
+        reminderMinutesBefore: Int = 15, // Kuinka monta minuuttia ennen vuoroa hälytetään
+        shiftKeywords: List<String> = listOf("työvuoro", "aamuvuoro", "iltavuoro", "yövuoro", "vuoro")
+    ) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) 
+            != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val twoWeeksAhead = now + 14L * 24 * 60 * 60 * 1000 // Katsoo 14 vrk eteenpäin
+
+        val projection = arrayOf(
+            CalendarContract.Events._ID,
+            CalendarContract.Events.TITLE,
+            CalendarContract.Events.DTSTART
+        )
+
+        val selection = "${CalendarContract.Events.DTSTART} > ? AND ${CalendarContract.Events.DTSTART} < ?"
+        val selectionArgs = arrayOf(now.toString(), twoWeeksAhead.toString())
+
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        context.contentResolver.query(
+            CalendarContract.Events.CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            "${CalendarContract.Events.DTSTART} ASC"
+        )?.use { cursor ->
+            val titleIdx = cursor.getColumnIndex(CalendarContract.Events.TITLE)
+            val startIdx = cursor.getColumnIndex(CalendarContract.Events.DTSTART)
+
+            while (cursor.moveToNext()) {
+                val title = cursor.getString(titleIdx) ?: continue
+                val startTime = cursor.getLong(startIdx)
+
+                // Ohitetaan lomat, vapaat ja muut kalenterimerkinnät
+                val lowerTitle = title.lowercase(Locale.getDefault())
+                val isWorkShift = shiftKeywords.any { lowerTitle.contains(it) } &&
+                                  !lowerTitle.contains("loma") &&
+                                  !lowerTitle.contains("vapaa")
+
+                if (isWorkShift) {
+                    val triggerTime = startTime - (reminderMinutesBefore * 60 * 1000L)
+                    if (triggerTime > now) {
+                        val intent = Intent(context, ShiftReminderReceiver::class.java).apply {
+                            putExtra("shift_title", title)
+                            putExtra("shift_start", startTime)
+                        }
+                        // Uniikki ID vuoron alkamisajan perusteella estää tuplahälytykset
+                        val requestCode = (startTime / 60000L).toInt()
+                        val pendingIntent = PendingIntent.getBroadcast(
+                            context,
+                            requestCode,
+                            intent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
+
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                            } else {
+                                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                            }
+                        } catch (e: SecurityException) {
+                            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
 }
 
 
