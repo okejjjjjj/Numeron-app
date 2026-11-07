@@ -47,7 +47,7 @@ class SettingsActivity : AppCompatActivity() {
             setPadding(dp(4), 0, dp(4), dp(4))
         }
         val subHeaderView = TextView(this).apply {
-            text = "Numeron WFM -automaation ja kalenterin hallinta"
+            text = "Numeron Vuorovahti – automaation ja kalenterin hallinta"
             textSize = 13f
             setTextColor(Color.parseColor("#94A3B8"))
             setPadding(dp(4), 0, dp(4), dp(20))
@@ -115,7 +115,7 @@ class SettingsActivity : AppCompatActivity() {
         // 1. Organisaatio & Tunnukset
         val cardOrg = createCard(
             "1. Organisaatio ja kirjautuminen",
-            "Syötä organisaation tunnus (esim. omaorganisaatio) tai palvelimen osoite, sekä kirjautumistiedot."
+            "Syötä organisaation tunnus (esim. omaorganisaatio) tai palvelimen osoite, sekä kirjautumistiedot. (Esittelytila: syötä tunnukseksi ja salasanaksi 'demo')."
         )
         val orgEdit = EditText(this).apply {
             hint = "Organisaatio tai osoite (esim. omaorganisaatio.numeronwfm.com)"
@@ -150,7 +150,7 @@ class SettingsActivity : AppCompatActivity() {
         )
         cardBio.addView(bioSwitch)
 
-        // 3. Automaattinen vuorojen synkronointi
+        // 3. Automaattinen vuorojen synkronointi + Viimeisin synkronointiaika
         val cardSync = createCard(
             "3. Työvuorojen automaattinen haku",
             "Tarkistaa uudet 3 viikon listat julkaisuperjantaisin klo 11 jälkeen ja vie ne kalenteriin."
@@ -159,7 +159,14 @@ class SettingsActivity : AppCompatActivity() {
             "Synkronoi työvuorot automaattisesti",
             SettingsManager.isAutoSyncEnabled(this)
         )
+        val syncStatusText = TextView(this).apply {
+            text = VuorovahtiHelper.getLastSyncStatus(this@SettingsActivity)
+            textSize = 12f
+            setTextColor(Color.parseColor("#10B981"))
+            setPadding(0, dp(8), 0, 0)
+        }
         cardSync.addView(syncSwitch)
+        cardSync.addView(syncStatusText)
 
         // 4. Kohdekalenteri
         val cardCal = createCard(
@@ -222,22 +229,28 @@ class SettingsActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, dp(48), 1.5f).apply { marginStart = dp(8) }
             setOnClickListener {
                 val orgText = orgEdit.text.toString().trim()
-                if (orgText.isEmpty()) {
+                val userText = userEdit.text.toString().trim()
+                val passText = passEdit.text.toString()
+                val isDemoUser = userText.equals("demo", ignoreCase = true)
+
+                if (orgText.isEmpty() && !isDemoUser) {
                     Toast.makeText(this@SettingsActivity, "Syötä ensin organisaation tunnus tai osoite.", Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
+
                 val selectedIdx = calendarSpinner.selectedItemPosition
                 val calId = if (selectedIdx in calendarList.indices) calendarList[selectedIdx].id else -1L
                 SettingsManager.saveAll(
                     this@SettingsActivity,
-                    orgText,
-                    userEdit.text.toString(),
-                    passEdit.text.toString(),
+                    if (isDemoUser && orgText.isEmpty()) "demo" else orgText,
+                    userText,
+                    passText,
                     bioSwitch.isChecked,
                     syncSwitch.isChecked,
                     notifSwitch.isChecked,
                     calId
                 )
+                VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
                 Toast.makeText(this@SettingsActivity, "Asetukset tallennettu!", Toast.LENGTH_SHORT).show()
                 setResult(RESULT_OK)
                 finish()
@@ -247,6 +260,16 @@ class SettingsActivity : AppCompatActivity() {
         btnRow.addView(btnCancel)
         btnRow.addView(btnSave)
         container.addView(btnRow)
+
+        // Vastuuvapauslauseke alareunaan
+        val disclaimerView = TextView(this).apply {
+            text = "Numeron Vuorovahti on itsenäinen ja epävirallinen aputyökalu. Kehittäjä ei vastaa mahdollisista virheistä työvuorojen synkronoinnissa tai leimauksissa. Tarkista viralliset työaikatiedot aina suoraan työnantajan järjestelmästä."
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#64748B"))
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(24), dp(12), dp(8))
+        }
+        container.addView(disclaimerView)
 
         rootScroll.addView(container)
         setContentView(rootScroll)
@@ -266,7 +289,7 @@ class SettingsActivity : AppCompatActivity() {
                 CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
                 CalendarContract.Calendars.ACCOUNT_NAME
             )
-            val sel = "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >=${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}"
+            val sel = "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}"
             try {
                 contentResolver.query(CalendarContract.Calendars.CONTENT_URI, proj, sel, null, null)?.use { c ->
                     while (c.moveToNext()) {
