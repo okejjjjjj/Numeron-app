@@ -142,7 +142,6 @@ class SettingsActivity : AppCompatActivity() {
             styleEdit(this)
         }
 
-        // Salasanakenttä + Näytä/Piilota-painike samalla rivillä
         val passRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -196,7 +195,6 @@ class SettingsActivity : AppCompatActivity() {
         passRow.addView(passEdit)
         passRow.addView(btnTogglePass)
 
-        // Tunnusten testauspainike ja tilarivi
         val authStatusText = TextView(this).apply {
             text = ""
             textSize = 12.5f
@@ -245,7 +243,7 @@ class SettingsActivity : AppCompatActivity() {
         )
         cardBio.addView(bioSwitch)
 
-        // 3. Automaattinen vuorojen synkronointi + Viimeisin synkronointiaika
+        // 3. Automaattinen vuorojen synkronointi
         val cardSync = createCard(
             "3. Työvuorojen automaattinen haku",
             "Tarkistaa uudet 3 viikon listat julkaisuperjantaisin klo 11 jälkeen ja vie ne kalenteriin."
@@ -254,7 +252,7 @@ class SettingsActivity : AppCompatActivity() {
             "Synkronoi työvuorot automaattisesti",
             SettingsManager.isAutoSyncEnabled(this)
         )
-        val syncStatusText = TextView(this).apply {
+        syncStatusText = TextView(this).apply {
             text = VuorovahtiHelper.getLastSyncStatus(this@SettingsActivity)
             textSize = 12f
             setTextColor(Color.parseColor("#10B981"))
@@ -279,7 +277,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         cardCal.addView(calendarSpinner)
 
-        // 5. Leimausnotifikaatiot + Edellinen ja Seuraava muistutus
+        // 5. Leimausnotifikaatiot
         val cardNotif = createCard(
             "5. Leimausmuistutukset",
             "Näytä hiljainen ilmoitus ja pikaleimausnappi 30 min ennen vuoron alkua ja loppua."
@@ -399,7 +397,6 @@ class SettingsActivity : AppCompatActivity() {
         btnRow.addView(btnSave)
         container.addView(btnRow)
 
-        // Vastuuvapauslauseke alareunaan
         val disclaimerView = TextView(this).apply {
             text = "Numeron Vuorovahti on itsenäinen ja epävirallinen aputyökalu. Kehittäjä ei vastaa mahdollisista virheistä työvuorojen synkronoinnissa tai leimauksissa. Tarkista viralliset työaikatiedot aina suoraan työnantajan järjestelmästä."
             textSize = 11.5f
@@ -412,7 +409,6 @@ class SettingsActivity : AppCompatActivity() {
         rootScroll.addView(container)
         setContentView(rootScroll)
 
-        // Varmistetaan kalenterihälytykset ja päivitetään tekstit heti asetussivun avautuessa
         VuorovahtiHelper.ensureRemindersFromCalendar(this)
         refreshReminderTexts()
         loadAvailableCalendars()
@@ -422,65 +418,6 @@ class SettingsActivity : AppCompatActivity() {
         lastReminderStatusText.text = "Edellinen muistutus: ${VuorovahtiHelper.getLastTriggeredReminder(this)}"
         nextReminderStatusText.text = "Seuraava muistutus: ${VuorovahtiHelper.getNextScheduledReminderText(this)}"
     }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun verifyCredentialsLive(
-        orgRaw: String,
-        user: String,
-        pass: String,
-        btn: Button,
-        statusView: TextView
-    ) {
-        statusView.visibility = View.VISIBLE
-
-        if (VuorovahtiHelper.isDemoMode(user, pass)) {
-            statusView.setTextColor(Color.parseColor("#10B981"))
-            statusView.text = "✓ Demo-tila tunnistettu! Voit tallentaa asetukset."
-            VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
-            return
-        }
-
-        if (orgRaw.isEmpty() || user.isEmpty() || pass.isEmpty()) {
-            statusView.setTextColor(Color.parseColor("#F87171"))
-            statusView.text = "✗ Täytä organisaatio, käyttäjätunnus ja salasana ennen testiä."
-            return
-        }
-
-        val cleanOrg = orgRaw.lowercase()
-            .removePrefix("https://")
-            .removePrefix("http://")
-            .substringBefore("/")
-            .substringBefore("?")
-            .trim()
-        val baseUrl = if (cleanOrg.contains(".")) "https://$cleanOrg" else "https://$cleanOrg.numeronwfm.com"
-        val testUrl = "$baseUrl/WorktimeStamping"
-
-        btn.isEnabled = false
-        btn.text = "Testataan yhteyttä..."
-        statusView.setTextColor(Color.parseColor("#38BDF8"))
-        statusView.text = "Yhdistetään osoitteeseen $baseUrl..."
-
-        testWebView?.destroy()
-        CookieManager.getInstance().removeAllCookies(null)
-
-        val safeU = user.replace("\\", "\\\\").replace("'", "\\'")
-        val safeP = pass.replace("\\", "\\\\").replace("'", "\\'")
-
-        var loginSubmitted = false
-        var testFinished = false
-
-        fun finishTest(success: Boolean, message: String) {
-            if (testFinished) return
-            testFinished = true
-            mainHandler.removeCallbacksAndMessages(null)
-            btn.isEnabled = true
-            btn.text = "Testaa yhteys ja tunnukset"
-            statusView.setTextColor(Color.parseColor(if (success) "#10B981" else "#F87171"))
-            statusView.text = message
-            if (success) VuorovahtiHelper.triggerConfirmHaptics(window.decorView)
-            testWebView?.destroy()
-            testWebView = null
-        }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun verifyCredentialsLive(
@@ -558,7 +495,6 @@ class SettingsActivity : AppCompatActivity() {
             setAcceptThirdPartyCookies(webView, true)
         }
 
-        // Liitetään WebView ikkunaan, jotta DOM ja lomakkeet renderöityvät oikein
         addContentView(webView, ViewGroup.LayoutParams(1, 1))
         testWebView = webView
 
@@ -581,7 +517,6 @@ class SettingsActivity : AppCompatActivity() {
                         if (!passInputs[p].disabled) { passEl = passInputs[p]; break; }
                     }
 
-                    // 1. Tarkistetaan olemmeko jo kirjautuneena sisällä
                     if (!passEl && href.indexOf('login') === -1 && href.indexOf('auth') === -1 &&
                         (bodyTxt.indexOf('leimaa') !== -1 || bodyTxt.indexOf('työaika') !== -1 ||
                          bodyTxt.indexOf('kalenteri') !== -1 || bodyTxt.indexOf('uloskirjaus') !== -1 ||
@@ -589,7 +524,6 @@ class SettingsActivity : AppCompatActivity() {
                         return "LOGGED_IN_SUCCESS";
                     }
 
-                    // 2. Tarkistetaan selkeä virheilmoitus sivulla
                     if ($submittedFlag && (bodyTxt.indexOf('virheellinen') !== -1 || bodyTxt.indexOf('epäonnistui') !== -1 ||
                         bodyTxt.indexOf('invalid') !== -1 || bodyTxt.indexOf('väärä') !== -1 ||
                         bodyTxt.indexOf('tarkista käyttäjätunnus') !== -1 || bodyTxt.indexOf('incorrect') !== -1)) {
@@ -610,7 +544,6 @@ class SettingsActivity : AppCompatActivity() {
                         if (!userInputs[u].readOnly && !userInputs[u].disabled) { userEl = userInputs[u]; break; }
                     }
 
-                    // Jos kaksivaiheinen kirjautuminen (ensin tunnus, sitten salasana)
                     if (!passEl && userEl && !window._userStepDone) {
                         window._userStepDone = true;
                         setNativeValue(userEl, '$safeU');
@@ -618,7 +551,6 @@ class SettingsActivity : AppCompatActivity() {
                         if (nextBtn) { nextBtn.click(); return "STEP_USER_SUBMITTED"; }
                     }
 
-                    // Syötetään tunnus ja salasana vain kerran per sivunlataus
                     if (passEl && !window._passStepDone) {
                         window._passStepDone = true;
                         if (userEl) setNativeValue(userEl, '$safeU');
@@ -667,7 +599,6 @@ class SettingsActivity : AppCompatActivity() {
                 request: android.webkit.WebResourceRequest?,
                 error: android.webkit.WebResourceError?
             ) {
-                // Huomioidaan vain pääkehyksen (isForMainFrame) oikeat verkkovirheet
                 if (request?.isForMainFrame == true) {
                     finishTest(false, "✗ Yhteysvirhe: Palvelinta ($baseUrl) ei löytynyt. Tarkista organisaation tunnus.")
                 }
@@ -683,15 +614,6 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         webView.loadUrl(testUrl)
-    }
-
-        
-    override fun onDestroy() {
-        mainHandler.removeCallbacksAndMessages(null)
-        (testWebView?.parent as? ViewGroup)?.removeView(testWebView)
-        testWebView?.destroy()
-        testWebView = null
-        super.onDestroy()
     }
 
     private fun loadAvailableCalendars() {
@@ -752,5 +674,13 @@ class SettingsActivity : AppCompatActivity() {
             VuorovahtiHelper.ensureRemindersFromCalendar(this)
             refreshReminderTexts()
         }
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        (testWebView?.parent as? ViewGroup)?.removeView(testWebView)
+        testWebView?.destroy()
+        testWebView = null
+        super.onDestroy()
     }
 }
