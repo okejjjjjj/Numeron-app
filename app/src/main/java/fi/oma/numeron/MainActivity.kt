@@ -404,7 +404,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!isBackgroundListSync) {
-            webView.loadUrl(urlStamping)
+if (VuorovahtiHelper.isDemoMode(savedUsername, savedPassword)) {
+    webView.loadUrl("file:///android_asset/demo_shifts.html")
+} else {
+    webView.loadUrl(savedServerUrl)
+}
+
         }
     }
 
